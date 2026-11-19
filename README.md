@@ -1,0 +1,1 @@
+# community_washing_bay
