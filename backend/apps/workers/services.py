@@ -39,6 +39,20 @@ def get_worker_commission_summary(worker, *, summary_date, period):
         worker=worker,
         effective_date__range=(period_start, period_end),
     ).aggregate(total=Sum("amount"))["total"] or ZERO_MONEY
+    earned_entries = CommissionLedgerEntry.objects.filter(
+        worker=worker,
+        entry_type=CommissionLedgerEntry.EntryType.EARNED,
+        effective_date__range=(period_start, period_end),
+    )
+    completed_wash_sales = earned_entries.aggregate(
+        total=Sum("commission_base_snapshot")
+    )["total"] or ZERO_MONEY
+    commission_percentages = list(
+        earned_entries.exclude(commission_rate_snapshot__isnull=True)
+        .values_list("commission_rate_snapshot", flat=True)
+        .distinct()
+        .order_by("commission_rate_snapshot")
+    )
     paid = CommissionPayment.objects.filter(
         worker=worker,
         payment_date__range=(period_start, period_end),
@@ -47,6 +61,11 @@ def get_worker_commission_summary(worker, *, summary_date, period):
         "period": period,
         "period_start": period_start,
         "period_end": period_end,
+        "total_wash_sales": completed_wash_sales,
+        "commission_percentage": (
+            commission_percentages[0] if len(commission_percentages) == 1 else None
+        ),
+        "commission_percentages": commission_percentages,
         "earned_commission": earned,
         "paid_commission": paid,
         "outstanding_commission": get_worker_outstanding_commission(worker),

@@ -1,0 +1,25 @@
+[Unit]
+Description=Synchronize Community Washing Bay SQLite data with Supabase
+After=community-washing-bay.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/srv/community-washing-bay/backend
+EnvironmentFile=/etc/community-washing-bay/app.env
+Environment=DJANGO_SETTINGS_MODULE=config.settings.production
+StateDirectory=community-washing-bay
+StateDirectoryMode=0750
+UMask=0077
+ExecStart=/srv/community-washing-bay/backend/.venv/bin/python manage.py sync_supabase --watch --interval 30
+Restart=always
+RestartSec=10
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/community-washing-bay /srv/community-washing-bay/backend/private_media
+
+[Install]
+WantedBy=multi-user.target

@@ -66,13 +66,15 @@ class WorkerApiTests(TestCase):
         payload.update(overrides)
         return payload
 
-    def create_job(self):
+    def create_job(self, workers=None):
         return self.client.post(
             "/api/v1/jobs/",
             {
                 "number_plate": "ABC-123",
                 "vehicle_type": str(self.vehicle_type.pk),
-                "workers": [str(self.worker.pk)],
+                "workers": [
+                    str(worker.pk) for worker in (workers or [self.worker])
+                ],
                 "services": [str(self.service.pk)],
             },
             format="json",
@@ -152,8 +154,18 @@ class WorkerApiTests(TestCase):
             f"/api/v1/workers/{self.worker.pk}/commission-summary/"
             f"?date={job_response.data['job_date']}"
         )
+        weekly_summary_url = (
+            f"/api/v1/workers/{self.worker.pk}/commission-summary/"
+            f"?date={job_response.data['job_date']}&period=weekly"
+        )
+        monthly_summary_url = (
+            f"/api/v1/workers/{self.worker.pk}/commission-summary/"
+            f"?date={job_response.data['job_date']}&period=monthly"
+        )
 
         initial_summary = self.client.get(summary_url)
+        weekly_summary = self.client.get(weekly_summary_url)
+        monthly_summary = self.client.get(monthly_summary_url)
         payment_response = self.client.post(
             f"/api/v1/workers/{self.worker.pk}/commission-payments/",
             {
@@ -171,8 +183,16 @@ class WorkerApiTests(TestCase):
         self.assertEqual(job_response.status_code, 201)
         self.assertEqual(completion_response.status_code, 200)
         self.assertEqual(initial_summary.status_code, 200)
+        self.assertEqual(initial_summary.data["total_wash_sales"], "20.00")
+        self.assertEqual(initial_summary.data["commission_percentage"], "15.00")
+        self.assertEqual(initial_summary.data["commission_percentages"], ["15.00"])
         self.assertEqual(initial_summary.data["daily_commission"], "3.00")
         self.assertEqual(initial_summary.data["outstanding_commission"], "3.00")
+        for summary in (weekly_summary, monthly_summary):
+            self.assertEqual(summary.status_code, 200)
+            self.assertEqual(summary.data["total_wash_sales"], "20.00")
+            self.assertEqual(summary.data["commission_percentage"], "15.00")
+            self.assertEqual(summary.data["earned_commission"], "3.00")
         self.assertEqual(payment_response.status_code, 201)
         self.assertEqual(payment_response.data["amount"], "1.25")
         self.assertEqual(history_response.status_code, 200)
@@ -184,6 +204,36 @@ class WorkerApiTests(TestCase):
             assignment__job_id=job_response.data["id"]
         )
         self.assertEqual(ledger_entry.amount, Decimal("3.00"))
+
+    def test_worker_sales_and_commission_summaries_are_independent(self):
+        self.authenticate_as(self.manager)
+        second_worker = Worker.objects.create(
+            full_name="Sam Example",
+            phone_number="+1 (206) 555-0183",
+            employment_date=date(2025, 6, 1),
+        )
+        first_job = self.create_job()
+        self.assertEqual(self.complete_job(first_job.data["id"]).status_code, 200)
+
+        self.pricing.price = Decimal("10.00")
+        self.pricing.save(update_fields={"price", "updated_at"})
+        second_job = self.create_job(workers=[second_worker])
+        self.assertEqual(self.complete_job(second_job.data["id"]).status_code, 200)
+
+        first_summary = self.client.get(
+            f"/api/v1/workers/{self.worker.pk}/commission-summary/"
+        )
+        second_summary = self.client.get(
+            f"/api/v1/workers/{second_worker.pk}/commission-summary/"
+        )
+
+        self.assertEqual(first_summary.status_code, 200)
+        self.assertEqual(first_summary.data["total_wash_sales"], "20.00")
+        self.assertEqual(first_summary.data["earned_commission"], "3.00")
+        self.assertEqual(second_summary.status_code, 200)
+        self.assertEqual(second_summary.data["total_wash_sales"], "10.00")
+        self.assertEqual(second_summary.data["earned_commission"], "1.50")
+        self.assertEqual(second_summary.data["commission_percentage"], "15.00")
 
     def test_daily_weekly_and_monthly_summaries_include_ledger_and_paid_totals(self):
         for effective_date, amount in (

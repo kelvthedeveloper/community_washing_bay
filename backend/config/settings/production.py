@@ -2,14 +2,20 @@ from .base import *  # noqa: F403
 from django.core.exceptions import ImproperlyConfigured
 
 DEBUG = False
-DATABASES["default"].setdefault("OPTIONS", {})
-database_sslmode = DATABASES["default"]["OPTIONS"].get("sslmode", "require")
+if "supabase" not in DATABASES:
+    raise ImproperlyConfigured("Production DATABASE_URL must be configured.")
+DATABASES["default"]["NAME"] = env(
+    "LOCAL_DATABASE_PATH",
+    default="/var/lib/community-washing-bay/community_washing_bay.sqlite3",
+)
+DATABASES["supabase"].setdefault("OPTIONS", {})
+database_sslmode = DATABASES["supabase"]["OPTIONS"].get("sslmode", "require")
 if database_sslmode not in {"require", "verify-ca", "verify-full"}:
     raise ImproperlyConfigured(
         "Production DATABASE_URL must use PostgreSQL sslmode=require, "
         "verify-ca, or verify-full."
     )
-DATABASES["default"]["OPTIONS"]["sslmode"] = database_sslmode
+DATABASES["supabase"]["OPTIONS"]["sslmode"] = database_sslmode
 SECURE_SSL_REDIRECT = True
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True

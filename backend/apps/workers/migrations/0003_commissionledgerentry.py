@@ -9,15 +9,16 @@ from decimal import Decimal
 
 
 def backfill_commission_ledger(apps, schema_editor):
+    database = schema_editor.connection.alias
     CommissionLedgerEntry = apps.get_model("workers", "CommissionLedgerEntry")
     CommissionSetting = apps.get_model("configuration", "CommissionSetting")
     Job = apps.get_model("jobs", "Job")
     JobService = apps.get_model("jobs", "JobService")
     JobWorkerAssignment = apps.get_model("jobs", "JobWorkerAssignment")
 
-    for job in Job.objects.filter(status="COMPLETED").iterator():
-        services = list(JobService.objects.filter(job_id=job.pk))
-        assignments = JobWorkerAssignment.objects.filter(job_id=job.pk)
+    for job in Job.objects.using(database).filter(status="COMPLETED").iterator():
+        services = list(JobService.objects.using(database).filter(job_id=job.pk))
+        assignments = JobWorkerAssignment.objects.using(database).filter(job_id=job.pk)
         commission_base = sum(
             (
                 service.commissionable_amount
@@ -40,7 +41,7 @@ def backfill_commission_ledger(apps, schema_editor):
         allocation_policy = "EQUAL_SPLIT"
         if setting_id is not None:
             allocation_policy = (
-                CommissionSetting.objects.filter(pk=setting_id)
+                CommissionSetting.objects.using(database).filter(pk=setting_id)
                 .values_list("allocation_policy", flat=True)
                 .first()
                 or "EQUAL_SPLIT"
@@ -48,7 +49,7 @@ def backfill_commission_ledger(apps, schema_editor):
         worker_count = assignments.count()
         effective_date = django.utils.timezone.localtime(job.completed_at).date()
         for assignment in assignments.iterator():
-            CommissionLedgerEntry.objects.create(
+            CommissionLedgerEntry.objects.using(database).create(
                 worker_id=assignment.worker_id,
                 job_id=job.pk,
                 assignment_id=assignment.pk,

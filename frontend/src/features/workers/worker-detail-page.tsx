@@ -197,6 +197,11 @@ export function WorkerDetailPage() {
       : reportPeriod === "weekly"
         ? "Weekly"
         : "Monthly";
+  const commissionPercentageLabel = summaryQuery.data
+    ? summaryQuery.data.commission_percentages.length > 0
+      ? `${summaryQuery.data.commission_percentages.join("% / ")}%`
+      : "—"
+    : "—";
 
   return (
     <div className="min-h-screen bg-[#f5f8f5]">
@@ -345,8 +350,7 @@ export function WorkerDetailPage() {
                 {summaryQuery.data && (
                   <p className="mt-2 text-xs text-muted-foreground">
                     {formatDate(summaryQuery.data.period_start)} –{" "}
-                    {formatDate(summaryQuery.data.period_end)} · Paid{" "}
-                    {formatMoney(summaryQuery.data.paid_commission)}
+                    {formatDate(summaryQuery.data.period_end)}
                   </p>
                 )}
               </div>
@@ -386,6 +390,36 @@ export function WorkerDetailPage() {
                 </label>
               </div>
             </div>
+            <dl className="mt-5 grid gap-3 border-t border-[#edf1ed] pt-4 sm:grid-cols-3">
+              <div>
+                <dt className="text-xs font-medium text-muted-foreground">
+                  Completed wash sales
+                </dt>
+                <dd className="mt-1 text-sm font-semibold text-foreground">
+                  {summaryQuery.isPending
+                    ? "—"
+                    : formatMoney(summaryQuery.data?.total_wash_sales ?? "0.00")}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium text-muted-foreground">
+                  Commission percentage used
+                </dt>
+                <dd className="mt-1 text-sm font-semibold text-foreground">
+                  {commissionPercentageLabel}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium text-muted-foreground">
+                  Commission paid in period
+                </dt>
+                <dd className="mt-1 text-sm font-semibold text-foreground">
+                  {summaryQuery.isPending
+                    ? "—"
+                    : formatMoney(summaryQuery.data?.paid_commission ?? "0.00")}
+                </dd>
+              </div>
+            </dl>
             {summaryQuery.isError && (
               <InlineError
                 message={getWorkerApiErrorMessage(summaryQuery.error)}

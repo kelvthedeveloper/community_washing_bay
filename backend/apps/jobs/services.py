@@ -532,16 +532,6 @@ def transition_job(*, job_id, target_status, actor):
             raise serializers.ValidationError(
                 {"services": "Job price and commission snapshots are incomplete."}
             )
-        total_commission = ZERO_MONEY
-        for item in job_services:
-            item.commission_amount = (
-                item.commissionable_amount
-                * item.commission_rate_snapshot
-                / Decimal("100")
-            ).quantize(ONE_CENT, rounding=ROUND_HALF_UP)
-            item.save(update_fields={"commission_amount", "updated_at"})
-            total_commission += item.commission_amount
-
         assignments = list(
             job.worker_assignments.select_for_update()
             .order_by("worker_id")
@@ -550,14 +540,23 @@ def transition_job(*, job_id, target_status, actor):
             raise serializers.ValidationError(
                 {"workers": "Completed jobs must have at least one assigned worker."}
             )
-        total_cents = int(
-            (total_commission / ONE_CENT).to_integral_value(rounding=ROUND_HALF_UP)
-        )
-        base_cents, extra_cents = divmod(total_cents, len(assignments))
-        for index, assignment in enumerate(assignments):
-            assigned_cents = base_cents + (1 if index < extra_cents else 0)
-            assignment.commission_amount = Decimal(assigned_cents) * ONE_CENT
+        commission_per_worker = ZERO_MONEY
+        for item in job_services:
+            commission_amount_per_worker = (
+                item.commissionable_amount
+                * item.commission_rate_snapshot
+                / Decimal("100")
+            ).quantize(ONE_CENT, rounding=ROUND_HALF_UP)
+            item.commission_amount = (
+                commission_amount_per_worker * len(assignments)
+            )
+            item.save(update_fields={"commission_amount", "updated_at"})
+            commission_per_worker += commission_amount_per_worker
+        total_commission = ZERO_MONEY
+        for assignment in assignments:
+            assignment.commission_amount = commission_per_worker
             assignment.save(update_fields={"commission_amount", "updated_at"})
+            total_commission += assignment.commission_amount
 
         commission_base = sum(
             (item.commissionable_amount for item in job_services),
@@ -570,7 +569,7 @@ def transition_job(*, job_id, target_status, actor):
         allocation_policy = (
             commission_setting.allocation_policy
             if commission_setting is not None
-            else CommissionSetting.AllocationPolicy.EQUAL_SPLIT
+            else CommissionSetting.AllocationPolicy.PER_WORKER
         )
         commission_rates = {
             item.commission_rate_snapshot for item in job_services

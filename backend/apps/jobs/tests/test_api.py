@@ -185,7 +185,7 @@ class JobApiTests(TestCase):
         self.assertEqual(ledger_entry.commission_rate_snapshot, Decimal("15.00"))
         self.assertEqual(
             ledger_entry.allocation_policy_snapshot,
-            CommissionSetting.AllocationPolicy.EQUAL_SPLIT,
+            CommissionSetting.AllocationPolicy.PER_WORKER,
         )
         self.assertEqual(ledger_entry.allocation_worker_count_snapshot, 1)
         self.assertEqual(ledger_entry.recorded_by, self.manager)
@@ -215,31 +215,24 @@ class JobApiTests(TestCase):
                 )
         self.assertEqual(CommissionLedgerEntry.objects.count(), 1)
 
-    def test_commission_is_split_evenly_and_remainder_cents_are_deterministic(self):
+    def test_each_worker_gets_the_configured_percentage_of_the_full_sale(self):
         self.authenticate_as(self.manager)
-        third_worker = self.create_worker("Taylor Example")
-        self.service.name = "small-commission-service"
-        self.service.save()
         pricing = ServicePricing.objects.get(
             vehicle_type=self.vehicle_type,
             service=self.service,
             effective_date=self.effective_date,
         )
-        pricing.price = Decimal("0.10")
+        pricing.price = Decimal("35.00")
         pricing.save(update_fields={"price", "updated_at"})
-        CommissionSetting.objects.create(
-            commission_percentage=Decimal("15.00"),
-            effective_date=timezone.localdate(),
-        )
         create_response = self.create_job(
             workers=[
                 str(self.worker.pk),
                 str(self.second_worker.pk),
-                str(third_worker.pk),
             ]
         )
 
         response = self.complete_job(create_response.data["id"])
+        job = Job.objects.get(pk=create_response.data["id"])
         assignments = list(
             JobWorkerAssignment.objects.filter(job_id=create_response.data["id"])
             .order_by("worker_id")
@@ -249,9 +242,13 @@ class JobApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             assignments,
-            [Decimal("0.01"), Decimal("0.01"), Decimal("0.00")],
+            [Decimal("5.25"), Decimal("5.25")],
         )
-        self.assertEqual(sum(assignments), Decimal("0.02"))
+        self.assertEqual(job.commission_amount, Decimal("10.50"))
+        self.assertEqual(
+            job.job_services.get().commission_amount,
+            Decimal("10.50"),
+        )
         self.assertEqual(
             list(
                 CommissionLedgerEntry.objects.filter(
@@ -261,6 +258,14 @@ class JobApiTests(TestCase):
                 .values_list("amount", flat=True)
             ),
             assignments,
+        )
+        self.assertEqual(
+            set(
+                CommissionLedgerEntry.objects.filter(
+                    assignment__job_id=create_response.data["id"]
+                ).values_list("allocation_policy_snapshot", flat=True)
+            ),
+            {CommissionSetting.AllocationPolicy.PER_WORKER},
         )
 
     def test_invalid_transitions_and_cancelled_jobs_do_not_accrue_commission(self):

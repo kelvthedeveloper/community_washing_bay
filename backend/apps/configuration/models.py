@@ -94,6 +94,7 @@ class ServicePricing(ActiveConfigurationModel):
 class CommissionSetting(ActiveConfigurationModel):
     class AllocationPolicy(models.TextChoices):
         EQUAL_SPLIT = "EQUAL_SPLIT", "Equal split"
+        PER_WORKER = "PER_WORKER", "Full percentage per worker"
 
     commission_percentage = models.DecimalField(
         max_digits=5,
@@ -107,7 +108,7 @@ class CommissionSetting(ActiveConfigurationModel):
     allocation_policy = models.CharField(
         max_length=20,
         choices=AllocationPolicy.choices,
-        default=AllocationPolicy.EQUAL_SPLIT,
+        default=AllocationPolicy.PER_WORKER,
     )
 
     class Meta:

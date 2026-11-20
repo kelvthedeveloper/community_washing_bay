@@ -13,19 +13,20 @@ from django.utils import timezone
 
 
 def backfill_pos_data(apps, schema_editor):
+    database = schema_editor.connection.alias
     Job = apps.get_model("jobs", "Job")
     JobService = apps.get_model("jobs", "JobService")
     Vehicle = apps.get_model("jobs", "Vehicle")
     ServicePricing = apps.get_model("configuration", "ServicePricing")
     CommissionSetting = apps.get_model("configuration", "CommissionSetting")
 
-    Job.objects.update(subtotal=F("total_price"))
-    JobService.objects.filter(price_snapshot__isnull=False).update(
+    Job.objects.using(database).update(subtotal=F("total_price"))
+    JobService.objects.using(database).filter(price_snapshot__isnull=False).update(
         commissionable_amount=F("price_snapshot")
     )
 
     vehicles_by_plate = {}
-    jobs = Job.objects.exclude(number_plate="").order_by(
+    jobs = Job.objects.using(database).exclude(number_plate="").order_by(
         "number_plate",
         "-registered_at",
     )
@@ -35,29 +36,29 @@ def backfill_pos_data(apps, schema_editor):
             continue
         vehicle = vehicles_by_plate.get(normalized_plate)
         if vehicle is None:
-            vehicle = Vehicle.objects.create(
+            vehicle = Vehicle.objects.using(database).create(
                 number_plate=normalized_plate,
                 vehicle_type_id=job.vehicle_type_id,
             )
             vehicles_by_plate[normalized_plate] = vehicle
-        Job.objects.filter(pk=job.pk).update(vehicle_id=vehicle.pk)
+        Job.objects.using(database).filter(pk=job.pk).update(vehicle_id=vehicle.pk)
 
     effective_date = timezone.localdate()
     commission_setting = (
-        CommissionSetting.objects.filter(
+        CommissionSetting.objects.using(database).filter(
             is_active=True,
             effective_date__lte=effective_date,
         )
         .order_by("-effective_date")
         .first()
     )
-    for job in Job.objects.filter(status="PENDING").iterator():
-        lines = list(JobService.objects.filter(job_id=job.pk))
+    for job in Job.objects.using(database).filter(status="PENDING").iterator():
+        lines = list(JobService.objects.using(database).filter(job_id=job.pk))
         for line in lines:
             if line.price_snapshot is not None or commission_setting is None:
                 continue
             pricing = (
-                ServicePricing.objects.filter(
+                ServicePricing.objects.using(database).filter(
                     vehicle_type_id=job.vehicle_type_id,
                     service_id=line.service_id,
                     is_active=True,
@@ -68,7 +69,7 @@ def backfill_pos_data(apps, schema_editor):
             )
             if pricing is None:
                 continue
-            JobService.objects.filter(pk=line.pk).update(
+            JobService.objects.using(database).filter(pk=line.pk).update(
                 pricing_record_id=pricing.pk,
                 commission_setting_id=commission_setting.pk,
                 price_snapshot=pricing.price,
@@ -88,7 +89,7 @@ def backfill_pos_data(apps, schema_editor):
                 (line.price_snapshot for line in lines),
                 Decimal("0.00"),
             )
-            Job.objects.filter(pk=job.pk).update(
+            Job.objects.using(database).filter(pk=job.pk).update(
                 subtotal=subtotal,
                 total_price=subtotal,
             )

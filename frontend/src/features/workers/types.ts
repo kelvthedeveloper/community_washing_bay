@@ -51,6 +51,9 @@ export interface CommissionSummary {
   period: "daily" | "weekly" | "monthly";
   period_start: string;
   period_end: string;
+  total_wash_sales: string;
+  commission_percentage: string | null;
+  commission_percentages: string[];
   earned_commission: string;
   paid_commission: string;
   date?: string;
@@ -71,7 +74,7 @@ export interface CommissionLedgerEntry {
   reason: string;
   commission_base_snapshot: string | null;
   commission_rate_snapshot: string | null;
-  allocation_policy_snapshot: "EQUAL_SPLIT" | null;
+  allocation_policy_snapshot: "EQUAL_SPLIT" | "PER_WORKER" | null;
   allocation_worker_count_snapshot: number | null;
   recorded_by: string | null;
   recorded_by_name: string | null;

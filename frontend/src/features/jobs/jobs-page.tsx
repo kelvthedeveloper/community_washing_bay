@@ -23,6 +23,7 @@ import { useAuth } from "@/features/auth/auth-context";
 import { getRoleHomePath } from "@/features/auth/protected-route";
 import type { BusinessRole } from "@/features/auth/types";
 import { getWorkerApiErrorMessage, formatDate, formatDateTime, formatMoney, localDateInputValue } from "@/features/workers/utils";
+import { confirmAction } from "@/lib/sweet-alert";
 
 import {
   createSale,
@@ -162,13 +163,23 @@ export function JobsPage() {
     },
   });
 
-  function performTransition(job: Job, action: "start" | "complete" | "cancel") {
+  async function performTransition(job: Job, action: "start" | "complete" | "cancel") {
     const prompts = {
       start: "Start washing this vehicle?",
       complete: "Mark this washing job as completed?",
       cancel: "Cancel this washing job? No worker commission will be accrued.",
     };
-    if (window.confirm(prompts[action])) {
+    const confirmed = await confirmAction({
+      title: prompts[action],
+      confirmButtonText:
+        action === "cancel"
+          ? "Cancel job"
+          : action === "complete"
+            ? "Complete job"
+            : "Start washing",
+      destructive: action === "cancel",
+    });
+    if (confirmed) {
       transitionMutation.mutate({ jobId: job.id, action });
     }
   }

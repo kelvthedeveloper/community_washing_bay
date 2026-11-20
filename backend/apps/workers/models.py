@@ -120,7 +120,10 @@ class CommissionLedgerEntry(UUIDTimeStampedModel):
     )
     allocation_policy_snapshot = models.CharField(
         max_length=20,
-        choices=(("EQUAL_SPLIT", "Equal split"),),
+        choices=(
+            ("EQUAL_SPLIT", "Equal split"),
+            ("PER_WORKER", "Full percentage per worker"),
+        ),
         null=True,
         blank=True,
     )
@@ -163,7 +166,10 @@ class CommissionLedgerEntry(UUIDTimeStampedModel):
                         entry_type="EARNED",
                         assignment__isnull=False,
                         job__isnull=False,
-                        allocation_policy_snapshot="EQUAL_SPLIT",
+                        allocation_policy_snapshot__in=(
+                            "EQUAL_SPLIT",
+                            "PER_WORKER",
+                        ),
                         allocation_worker_count_snapshot__gt=0,
                     )
                     | ~models.Q(entry_type="EARNED")

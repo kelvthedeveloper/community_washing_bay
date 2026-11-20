@@ -100,6 +100,15 @@ class WorkerViewSet(viewsets.ModelViewSet):
             "period": summary["period"],
             "period_start": summary["period_start"].isoformat(),
             "period_end": summary["period_end"].isoformat(),
+            "total_wash_sales": format_money(summary["total_wash_sales"]),
+            "commission_percentage": (
+                format_money(summary["commission_percentage"])
+                if summary["commission_percentage"] is not None
+                else None
+            ),
+            "commission_percentages": [
+                format_money(rate) for rate in summary["commission_percentages"]
+            ],
             "earned_commission": format_money(summary["earned_commission"]),
             "paid_commission": format_money(summary["paid_commission"]),
             "outstanding_commission": format_money(

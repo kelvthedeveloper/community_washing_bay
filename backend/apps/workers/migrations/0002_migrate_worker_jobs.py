@@ -3,15 +3,16 @@ from django.utils import timezone
 
 
 def migrate_worker_jobs(apps, schema_editor):
+    database = schema_editor.connection.alias
     WorkerJob = apps.get_model("workers", "WorkerJob")
     Job = apps.get_model("jobs", "Job")
     JobService = apps.get_model("jobs", "JobService")
     JobWorkerAssignment = apps.get_model("jobs", "JobWorkerAssignment")
 
-    for legacy in WorkerJob.objects.all().iterator():
+    for legacy in WorkerJob.objects.using(database).all().iterator():
         completed = legacy.status == "COMPLETED"
         cancelled = legacy.status == "CANCELLED"
-        job = Job.objects.create(
+        job = Job.objects.using(database).create(
             id=legacy.pk,
             number_plate="",
             vehicle_type_id=legacy.vehicle_type_id,
@@ -23,18 +24,18 @@ def migrate_worker_jobs(apps, schema_editor):
             total_price=legacy.service_price or 0,
             commission_amount=legacy.commission_amount if completed else None,
         )
-        Job.objects.filter(pk=job.pk).update(
+        Job.objects.using(database).filter(pk=job.pk).update(
             created_at=legacy.created_at,
             updated_at=legacy.updated_at,
         )
-        JobService.objects.create(
+        JobService.objects.using(database).create(
             job_id=job.pk,
             service_id=legacy.service_id,
             price_snapshot=legacy.service_price,
             commission_rate_snapshot=legacy.commission_percentage,
             commission_amount=legacy.commission_amount if completed else None,
         )
-        JobWorkerAssignment.objects.create(
+        JobWorkerAssignment.objects.using(database).create(
             job_id=job.pk,
             worker_id=legacy.worker_id,
             commission_amount=legacy.commission_amount if completed else None,
@@ -42,17 +43,22 @@ def migrate_worker_jobs(apps, schema_editor):
 
 
 def restore_worker_jobs(apps, schema_editor):
+    database = schema_editor.connection.alias
     Job = apps.get_model("jobs", "Job")
     JobService = apps.get_model("jobs", "JobService")
     JobWorkerAssignment = apps.get_model("jobs", "JobWorkerAssignment")
     WorkerJob = apps.get_model("workers", "WorkerJob")
 
-    for job in Job.objects.all().iterator():
-        service = JobService.objects.filter(job_id=job.pk).first()
-        assignment = JobWorkerAssignment.objects.filter(job_id=job.pk).first()
+    for job in Job.objects.using(database).all().iterator():
+        service = JobService.objects.using(database).filter(job_id=job.pk).first()
+        assignment = (
+            JobWorkerAssignment.objects.using(database)
+            .filter(job_id=job.pk)
+            .first()
+        )
         if service is None or assignment is None:
             continue
-        legacy = WorkerJob.objects.create(
+        legacy = WorkerJob.objects.using(database).create(
             id=job.pk,
             worker_id=assignment.worker_id,
             vehicle_type_id=job.vehicle_type_id,
@@ -64,7 +70,7 @@ def restore_worker_jobs(apps, schema_editor):
             commission_percentage=service.commission_rate_snapshot,
             commission_amount=assignment.commission_amount,
         )
-        WorkerJob.objects.filter(pk=legacy.pk).update(
+        WorkerJob.objects.using(database).filter(pk=legacy.pk).update(
             created_at=job.created_at,
             updated_at=job.updated_at,
         )

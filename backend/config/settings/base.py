@@ -73,11 +73,30 @@ AUTHENTICATION_BACKENDS = [
     "apps.users.backends.UsernameOrEmailBackend",
 ]
 
-DATABASES = {"default": env.db_url("DATABASE_URL")}
-DATABASES["default"].setdefault(
-    "CONN_MAX_AGE",
-    env.int("DATABASE_CONN_MAX_AGE", default=60),
-)
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": env(
+            "LOCAL_DATABASE_PATH",
+            default=str(BASE_DIR / "community_washing_bay.sqlite3"),
+        ),
+        "OPTIONS": {
+            "timeout": env.int("SQLITE_TIMEOUT", default=20),
+        },
+    },
+}
+database_url = env("DATABASE_URL", default="").strip()
+if database_url:
+    DATABASES["supabase"] = env.db_url("DATABASE_URL")
+    DATABASES["supabase"].setdefault(
+        "CONN_MAX_AGE",
+        env.int("DATABASE_CONN_MAX_AGE", default=60),
+    )
+    DATABASES["supabase"].setdefault("OPTIONS", {})
+    DATABASES["supabase"]["OPTIONS"].setdefault(
+        "connect_timeout",
+        env.int("DATABASE_CONNECT_TIMEOUT", default=5),
+    )
 
 AUTH_PASSWORD_VALIDATORS = [
     {

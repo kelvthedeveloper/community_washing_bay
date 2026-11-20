@@ -4,7 +4,7 @@ A web-based business management and POS application. The repository includes aut
 
 ## Architecture
 
-- **Backend:** Django 5.2 LTS, Django REST Framework, Simple JWT, django-filter, drf-spectacular, and PostgreSQL through `psycopg`.
+- **Backend:** Django 5.2 LTS, Django REST Framework, Simple JWT, django-filter, and drf-spectacular. The backend uses a persistent local SQLite database as its primary store and synchronizes a mirror to Supabase PostgreSQL when connected.
 - **Authentication:** username/email login, short-lived JWT access tokens, rotating refresh tokens with blacklist-backed logout, self-service password change, and role-restricted account management.
 - **Configuration:** environment-driven settings split into shared, development, and production modules. CORS and CSRF trusted origins must be explicitly configured.
 - **Frontend:** React, TypeScript, and Vite with Tailwind CSS and shadcn/ui conventions.
@@ -16,11 +16,11 @@ A web-based business management and POS application. The repository includes aut
 
 - Python 3.11 or newer
 - Node.js 20.19+ or 22.12+
-- PostgreSQL 14 or newer
+- PostgreSQL 14 or newer for the Supabase mirror; the local backend runs on SQLite.
 
 ## Backend setup (PowerShell)
 
-Create a PostgreSQL database and user, then configure the backend environment:
+Configure the backend environment. `LOCAL_DATABASE_PATH` selects the persistent local SQLite database. Set `DATABASE_URL` to a Supabase PostgreSQL connection URI to enable background synchronization; it may be omitted for local-only operation.
 
 ```powershell
 cd backend
@@ -32,7 +32,7 @@ pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-Edit `backend/.env` and set `DATABASE_URL` to the PostgreSQL connection URI from your provider. URL-encode reserved characters in the username or password, and quote the full value if it contains shell-special characters such as `&`. Generate a Django key with `python -c "import secrets; print(secrets.token_urlsafe(50))"` and put the result in `DJANGO_SECRET_KEY`. Configure `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS` with the exact frontend origin(s); do not use a wildcard.
+Edit `backend/.env` and set `LOCAL_DATABASE_PATH` to a durable path. When using Supabase synchronization, set `DATABASE_URL` to its PostgreSQL connection URI; leave it blank for local-only development. URL-encode reserved characters in the username or password, and quote the full value if it contains shell-special characters such as `&`. Generate a Django key with `python -c "import secrets; print(secrets.token_urlsafe(50))"` and put the result in `DJANGO_SECRET_KEY`. Configure `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS` with the exact frontend origin(s); do not use a wildcard.
 
 The custom `users.User` model is configured before the first database migration. Create that initial migration before migrating a new database:
 
@@ -44,6 +44,8 @@ python manage.py createsuperuser
 python manage.py runserver
 ```
 
+When `DATABASE_URL` is configured, run `python manage.py sync_supabase` to initialize the mirror. The first synchronization imports remote-only records into SQLite and uploads local-only records; same-record differences are reported as conflicts rather than overwritten. Keep the backend host running on the local network for offline use. SQLite is the application source of truth; an installed sync service pushes local changes to Supabase and pulls remote-only changes every 30 seconds. A new host that needs existing Supabase data available offline must complete one successful online sync first. Receipt files stay in the backend's private media directory on that host; they are not stored in PostgreSQL.
+
 The only login roles are `SUPER_ADMIN`, `ADMIN` (business owner), and `MANAGER` (daily operations). Workers are separate records and never receive application login accounts. Super admins receive Django and DRF permission bypasses, including permissions added in the future. New regular users default to `MANAGER`; create the initial super admin with `createsuperuser`.
 
 Reusable DRF role gates are in `apps.core.permissions`: `HasBusinessRole`, `IsSuperAdmin`, `IsAdmin`, and `IsManager`. Build future role-restricted permissions on `HasBusinessRole` so the super-admin bypass is retained.
@@ -54,9 +56,9 @@ The versioned API lives under `/api/v1/`. Authentication endpoints are `POST /ap
 
 Business configuration APIs are grouped under `/api/v1/configuration/`: `vehicle-types/`, `services/`, `service-pricing/`, `commission-settings/`, `expense-categories/`, and `inventory-categories/`. Admins and Super Admins can configure records; Managers have read-only access. Lists support search, ordering, field filters, and page-number pagination. Pricing and commission changes are recorded with new effective dates rather than overwriting history. API deletion deactivates records instead of removing them. No vehicle types, service names, prices, or commission rates are seeded.
 
-Worker APIs are grouped under `/api/v1/workers/`; vehicle search is `/api/v1/vehicles/?search=<number-plate>`. Worker commission summaries support `period=daily`, `weekly`, or `monthly` with an optional reference `date`. The read-only commission ledger is available at `/api/v1/workers/<worker-id>/commission-ledger/`; Admins and Super Admins can append signed adjustments or full reversals, while Managers can view entries. Reversals never alter payments and any resulting negative balance carries forward against future earnings. POS sales are created atomically at `/api/v1/pos/sales/` and require a UUID `Idempotency-Key` header. The server resolves current effective prices, creates a vehicle record when needed, applies authorized discounts, creates the job, and optionally records an initial payment in one transaction. Repeating the same key and payload returns the original sale; reusing a key for different data returns HTTP 409.
+Worker APIs are grouped under `/api/v1/workers/`; vehicle search is `/api/v1/vehicles/?search=<number-plate>`. Worker commission summaries support `period=daily`, `weekly`, or `monthly` with an optional reference `date`, and report completed wash sales, the rate snapshots used, earned commission, payouts, and outstanding balance. The read-only commission ledger is available at `/api/v1/workers/<worker-id>/commission-ledger/`; Admins and Super Admins can append signed adjustments or full reversals, while Managers can view entries. Reversals never alter payments and any resulting negative balance carries forward against future earnings. POS sales are created atomically at `/api/v1/pos/sales/` and require a UUID `Idempotency-Key` header. The server resolves current effective prices, creates a vehicle record when needed, applies authorized discounts, creates the job, and optionally records an initial payment in one transaction. Repeating the same key and payload returns the original sale; reusing a key for different data returns HTTP 409.
 
-The POS supports cash, mobile money, card, and bank transfer. Payments may be partial or full; further payments are recorded at `/api/v1/jobs/<job-id>/payments/` with their own `Idempotency-Key`. Retried payment requests do not change balances twice. Sale prices and service-level discounts are snapshotted; later configuration changes do not affect historical sales. Only Admin and Super Admin can apply percentage or fixed discounts. The effective-dated commission setting explicitly stores the `EQUAL_SPLIT` worker allocation policy. Commission is calculated from discounted service snapshots, split evenly across assigned washers using deterministic cent-level remainder allocation, and recorded once per assignment in the append-only ledger. Managers, Admins, and Super Admins can manage workers and jobs; only Admins and Super Admins can record worker commission payouts or ledger corrections. Inactive workers cannot be assigned to new jobs, and cancelled jobs do not accrue commission. Receipts are available from `/api/v1/jobs/<job-id>/receipt/`.
+The POS supports cash, mobile money, card, and bank transfer. Payments may be partial or full; further payments are recorded at `/api/v1/jobs/<job-id>/payments/` with their own `Idempotency-Key`. Retried payment requests do not change balances twice. Sale prices and service-level discounts are snapshotted; later configuration changes do not affect historical sales. Only Admin and Super Admin can apply percentage or fixed discounts. Each assigned worker earns the configured commission percentage of the full discounted sale amount, recorded once per assignment in the append-only ledger. Managers, Admins, and Super Admins can manage workers and jobs; only Admins and Super Admins can record worker commission payouts or ledger corrections. Inactive workers cannot be assigned to new jobs, and cancelled jobs do not accrue commission. Receipts are available from `/api/v1/jobs/<job-id>/receipt/`.
 
 Inventory APIs are grouped under `/api/v1/inventory/`: `products/`, `suppliers/`, `purchases/`, `movements/`, and `reports/`. Managers can view products and suppliers and record purchases and stock usage; Admins can also manage product and supplier records and make stock adjustments. Stock is derived exclusively from append-only purchase, usage, and adjustment movements, and transactions cannot reduce quantity below zero. Valuation uses moving weighted-average cost, with costs and quantities snapshotted on movements. The valuation and movement reports support date-based inventory review. Inventory products use the database-configured inventory categories; no supplies, suppliers, or opening quantities are seeded. The inventory interface is available at `/workspace/inventory`.
 
@@ -68,7 +70,7 @@ Owner reports are restricted to Admin and Super Admin accounts. `GET /api/v1/rep
 
 Authentication endpoints use scoped rate limits. Refresh tokens rotate and are blacklisted after rotation or logout; changing a password revokes outstanding refresh tokens and invalidates existing access tokens. User API serializers expose an explicit safe field list and never return password hashes or Django privilege flags. DRF defaults to authenticated access; public endpoints must opt in explicitly.
 
-Run the model, configuration, worker, expense, reporting, inventory, authentication, account-authorization, and API tests with the test-only SQLite settings (normal application settings remain PostgreSQL-only):
+Run the model, configuration, worker, expense, reporting, inventory, authentication, account-authorization, and API tests with the test-only in-memory SQLite settings:
 
 ```powershell
 python manage.py test --settings=config.settings.test
@@ -115,12 +117,13 @@ DJANGO_ALLOWED_HOSTS=washing-bay.example.com
 CORS_ALLOWED_ORIGINS=https://washing-bay.example.com
 CSRF_TRUSTED_ORIGINS=https://washing-bay.example.com
 DATABASE_URL='postgresql://postgres.<project-ref>:<percent-encoded-password>@<supabase-host>:5432/postgres?sslmode=require&conn_max_age=60'
+LOCAL_DATABASE_PATH=/var/lib/community-washing-bay/community_washing_bay.sqlite3
 DJANGO_TIME_ZONE=UTC
 ```
 
 Replace the example database URL with the URI Supabase provides (including its actual database name, username, host, and port). Keep `sslmode=require`; production settings enforce this when no SSL mode is present in the URL. Generate the Django secret rather than reusing the example. Keep the env file out of source control and backups accessible to ordinary users. Use a dedicated least-privilege Supabase database role where possible, granting the schema privileges Django migrations require; never put a Supabase `service_role` API key in Django's database settings or the frontend. `DJANGO_TRUST_X_FORWARDED_PROTO=True` is appropriate here because Nginx is the only proxy to the Unix socket and overwrites `X-Forwarded-Proto`. Never enable it behind a proxy that passes client-supplied forwarding headers through.
 
-Create private runtime directories and make only receipt storage writable by Django:
+Create private runtime directories and make the SQLite state directory and receipt storage writable by Django:
 
 ```bash
 sudo install -d -o root -g www-data -m 0750 /etc/community-washing-bay
@@ -140,23 +143,27 @@ sudo -u www-data bash -c '
   cd /srv/community-washing-bay/backend
   .venv/bin/python manage.py check --deploy
   .venv/bin/python manage.py migrate
+  .venv/bin/python manage.py sync_supabase
   .venv/bin/python manage.py collectstatic --noinput
+  # Create a superuser only for a new, empty installation.
   .venv/bin/python manage.py createsuperuser
 '
 ```
 
 ### Gunicorn and systemd
 
-Install the supplied unit and enable the service:
+Install the supplied application and synchronization units:
 
 ```bash
 sudo cp /srv/community-washing-bay/deploy/community-washing-bay.service /etc/systemd/system/
+sudo cp /srv/community-washing-bay/deploy/community-washing-bay-sync.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now community-washing-bay
+sudo systemctl enable --now community-washing-bay-sync
 sudo systemctl status community-washing-bay
 ```
 
-The unit runs Gunicorn as `www-data`, creates the shared database cache table before startup (needed so throttles work across worker processes), writes logs to journald, and restricts filesystem writes to receipt storage and the runtime directory. Apply code and migrations as a controlled deployment; do not run migrations concurrently with application requests. Keep database and application backup/restore procedures tested.
+The application unit runs Gunicorn as `www-data`, migrates the local SQLite schema, and creates the cache table before startup. The sync unit applies Supabase migrations and synchronizes all Django model data, retrying when the network is unavailable. Both write logs to journald; check synchronization and conflict reports with `journalctl -u community-washing-bay-sync`. The SQLite file and receipt files must remain on persistent storage on the backend host. Keep database and application backup/restore procedures tested.
 
 ### Nginx, TLS, and frontend
 
@@ -182,7 +189,7 @@ Nginx serves the Vite SPA and collected Django static files, terminates HTTPS, a
 
 ### Backups, logs, and operations
 
-- Supabase plan-level backups and point-in-time recovery availability vary; verify and enable the protection level your business requires in the Supabase dashboard. The supplied `deploy/backup.sh` additionally writes a custom-format PostgreSQL dump and a separate private-media archive with restrictive permissions. Install a PostgreSQL client compatible with the Supabase server version. The backup script reads the same `DATABASE_URL` as Django, creates a temporary mode-`0600` PostgreSQL password file, and removes it when finished; it never places the password in the `pg_dump` command line. Do not use the transaction pooler for `pg_dump`; use the direct endpoint or a session pooler that supports the dump connection. Install `deploy/community-washing-bay-backup.service` and `deploy/community-washing-bay-backup.timer` into `/etc/systemd/system`, create `/var/backups/community-washing-bay` as root mode `0700`, then run `systemctl daemon-reload`, `systemctl enable --now community-washing-bay-backup.timer`, and `systemctl start community-washing-bay-backup.service` once to verify it. Check runs with `systemctl list-timers` and `journalctl -u community-washing-bay-backup.service`. Keep backups outside the public Nginx document root.
+- Supabase plan-level backups and point-in-time recovery availability vary; verify and enable the protection level your business requires in the Supabase dashboard. The supplied `deploy/backup.sh` writes a local SQLite backup, a custom-format PostgreSQL mirror dump, and a separate private-media archive with restrictive permissions. Install a PostgreSQL client compatible with the Supabase server version. The backup script reads `DATABASE_URL`, creates a temporary mode-`0600` PostgreSQL password file, and removes it when finished; it never places the password in the `pg_dump` command line. Do not use the transaction pooler for `pg_dump`; use the direct endpoint or a session pooler that supports the dump connection. Install `deploy/community-washing-bay-backup.service` and `deploy/community-washing-bay-backup.timer` into `/etc/systemd/system`, create `/var/backups/community-washing-bay` as root mode `0700`, then run `systemctl daemon-reload`, `systemctl enable --now community-washing-bay-backup.timer`, and `systemctl start community-washing-bay-backup.service` once to verify it. Check runs with `systemctl list-timers` and `journalctl -u community-washing-bay-backup.service`. Keep backups outside the public Nginx document root.
 - Encrypt backups and copy them off the VPS; the supplied timer does not implement off-site transfer or retention deletion. Define retention and storage-capacity alerts for your business, and avoid storing long-lived backups on the same disk as the database.
 - Test restores periodically in a separate Supabase project or isolated database. A backup is not verified until both database and media are restored and an application-level smoke test succeeds. Restore the custom-format dump using Supabase's documented restore/migration procedure and an appropriately privileged connection; never restore over production during a test. Restore media into a separate staging directory and verify receipt download through the authenticated API before promoting it.
 - Django and Gunicorn write to stdout/stderr. Inspect logs with `sudo journalctl -u community-washing-bay`; configure journald retention/forwarding to meet the business's retention requirements. Nginx access/error logs are under `/var/log/nginx/`.
@@ -204,7 +211,7 @@ Nginx serves the Vite SPA and collected Django static files, terminates HTTPS, a
 - [ ] Database and media backups are current, off-host, access-restricted, and a restore has been exercised.
 - [ ] Frontend build and full Django tests pass for the release.
 
-The shared production cache is PostgreSQL-backed to ensure authentication and API throttles are shared between Gunicorn workers. The database is Supabase PostgreSQL; Django and Gunicorn logs go to the system journal, while database monitoring and managed backups are configured through Supabase. Configure log retention and external log shipping to suit operational requirements.
+The production cache and application writes use the local SQLite database, so Django remains available when Supabase or the internet is unavailable. Supabase PostgreSQL is the synchronized remote mirror. Django and Gunicorn logs go to the system journal, while remote database monitoring and managed backups are configured through Supabase. Configure log retention and external log shipping to suit operational requirements.
 
 ## Frontend setup (PowerShell)
 

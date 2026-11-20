@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { useAuth } from "@/features/auth/auth-context";
 import { getRoleHomePath } from "@/features/auth/protected-route";
 import { getWorkerApiErrorMessage, formatDate } from "@/features/workers/utils";
+import { confirmAction } from "@/lib/sweet-alert";
 
 import {
   createManagedAccount,
@@ -97,14 +98,21 @@ export function AccountsPage() {
     setFormMode("edit");
   }
 
-  function toggleActive(account: ManagedAccount) {
+  async function toggleActive(account: ManagedAccount) {
     const isActive = !account.is_active;
-    if (
-      (account.id === user?.id && !isActive)
-      || !window.confirm(`${isActive ? "Activate" : "Deactivate"} ${account.username}?`)
-    ) {
+    if (account.id === user?.id && !isActive) {
       return;
     }
+
+    const confirmed = await confirmAction({
+      title: `${isActive ? "Activate" : "Deactivate"} ${account.username}?`,
+      confirmButtonText: isActive ? "Activate account" : "Deactivate account",
+      destructive: !isActive,
+    });
+    if (!confirmed) {
+      return;
+    }
+
     setActionError(null);
     activeMutation.mutate({ account, isActive });
   }
