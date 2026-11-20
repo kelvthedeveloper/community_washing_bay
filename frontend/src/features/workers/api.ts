@@ -3,13 +3,14 @@ import { apiClient } from "@/lib/api-client";
 import type {
   CommissionPayment,
   CommissionPaymentWritePayload,
+  CommissionLedgerEntry,
+  CommissionLedgerWritePayload,
   CommissionSummary,
   PaginatedResponse,
   Worker,
   WorkerJob,
   WorkerWritePayload,
 } from "./types";
-import type { NamedConfigurationRecord } from "@/features/configuration/types";
 
 export async function fetchWorkers(params: Record<string, string | number>) {
   const response = await apiClient.get<PaginatedResponse<Worker>>(
@@ -56,59 +57,26 @@ export async function fetchWorkerJobHistory(
   return response.data;
 }
 
-export async function fetchActiveJobOptions() {
-  const [vehicleTypes, services] = await Promise.all([
-    apiClient.get<PaginatedResponse<NamedConfigurationRecord>>(
-      "/v1/configuration/vehicle-types/",
-      { params: { is_active: true, page_size: 100 } },
-    ),
-    apiClient.get<PaginatedResponse<NamedConfigurationRecord>>(
-      "/v1/configuration/services/",
-      { params: { is_active: true, page_size: 100 } },
-    ),
-  ]);
-  return {
-    vehicleTypes: vehicleTypes.data.results,
-    services: services.data.results,
-  };
-}
-
-export async function createWorkerJob(
-  workerId: string,
-  vehicleTypeId: string,
-  serviceId: string,
-) {
-  const response = await apiClient.post<WorkerJob>("/v1/jobs/", {
-    worker: workerId,
-    vehicle_type: vehicleTypeId,
-    service: serviceId,
-  });
-  return response.data;
-}
-
-export async function completeWorkerJob(jobId: string) {
-  const response = await apiClient.post<WorkerJob>(
-    `/v1/jobs/${jobId}/complete/`,
-    {},
-  );
-  return response.data;
-}
-
-export async function cancelWorkerJob(jobId: string) {
-  const response = await apiClient.post<WorkerJob>(
-    `/v1/jobs/${jobId}/cancel/`,
-    {},
-  );
-  return response.data;
-}
-
 export async function fetchWorkerCommissionSummary(
   workerId: string,
   date: string,
+  period: CommissionSummary["period"],
 ) {
   const response = await apiClient.get<CommissionSummary>(
     `/v1/workers/${workerId}/commission-summary/`,
-    { params: { date } },
+    { params: { date, period } },
+  );
+  return response.data;
+}
+
+export async function fetchWorkerCommissionLedger(
+  workerId: string,
+  page: number,
+  pageSize: number,
+) {
+  const response = await apiClient.get<PaginatedResponse<CommissionLedgerEntry>>(
+    `/v1/workers/${workerId}/commission-ledger/`,
+    { params: { page, page_size: pageSize } },
   );
   return response.data;
 }
@@ -131,6 +99,17 @@ export async function createWorkerCommissionPayment(
 ) {
   const response = await apiClient.post<CommissionPayment>(
     `/v1/workers/${workerId}/commission-payments/`,
+    payload,
+  );
+  return response.data;
+}
+
+export async function createWorkerCommissionLedgerEntry(
+  workerId: string,
+  payload: CommissionLedgerWritePayload,
+) {
+  const response = await apiClient.post<CommissionLedgerEntry>(
+    `/v1/workers/${workerId}/commission-ledger/`,
     payload,
   );
   return response.data;

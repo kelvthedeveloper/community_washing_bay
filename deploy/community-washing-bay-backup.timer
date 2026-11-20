@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Community Washing Bay backup schedule
+
+[Timer]
+OnCalendar=*-*-* 02:15:00
+Persistent=true
+RandomizedDelaySec=15m
+Unit=community-washing-bay-backup.service
+
+[Install]
+WantedBy=timers.target

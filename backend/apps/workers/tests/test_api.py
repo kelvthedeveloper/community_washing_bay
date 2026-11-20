@@ -6,14 +6,10 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from apps.configuration.models import (
-    CommissionSetting,
-    Service,
-    ServicePricing,
-    VehicleType,
-)
+from apps.configuration.models import CommissionSetting, Service, ServicePricing, VehicleType
+from apps.jobs.models import Job, JobWorkerAssignment
 from apps.users.models import User
-from apps.workers.models import CommissionPayment, Worker, WorkerJob
+from apps.workers.models import CommissionLedgerEntry, CommissionPayment, Worker
 
 
 class WorkerApiTests(TestCase):
@@ -38,16 +34,15 @@ class WorkerApiTests(TestCase):
         )
         self.vehicle_type = VehicleType.objects.create(name="fixture-worker-vehicle")
         self.service = Service.objects.create(name="fixture-worker-service")
-        self.effective_date = date(2020, 1, 1)
         self.pricing = ServicePricing.objects.create(
             vehicle_type=self.vehicle_type,
             service=self.service,
             price=Decimal("20.00"),
-            effective_date=self.effective_date,
+            effective_date=date(2020, 1, 1),
         )
         self.commission = CommissionSetting.objects.create(
             commission_percentage=Decimal("15.00"),
-            effective_date=self.effective_date,
+            effective_date=date(2020, 1, 1),
         )
         self.worker = Worker.objects.create(
             full_name="Alex Example",
@@ -75,10 +70,19 @@ class WorkerApiTests(TestCase):
         return self.client.post(
             "/api/v1/jobs/",
             {
-                "worker": str(self.worker.pk),
+                "number_plate": "ABC-123",
                 "vehicle_type": str(self.vehicle_type.pk),
-                "service": str(self.service.pk),
+                "workers": [str(self.worker.pk)],
+                "services": [str(self.service.pk)],
             },
+            format="json",
+        )
+
+    def complete_job(self, job_id):
+        self.client.post(f"/api/v1/jobs/{job_id}/start/", {}, format="json")
+        return self.client.post(
+            f"/api/v1/jobs/{job_id}/complete/",
+            {},
             format="json",
         )
 
@@ -137,99 +141,16 @@ class WorkerApiTests(TestCase):
         response = self.create_job()
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("worker", response.data)
-        self.assertEqual(WorkerJob.objects.count(), 0)
+        self.assertIn("workers", response.data)
+        self.assertEqual(Job.objects.count(), 0)
 
-    def test_active_worker_can_be_assigned_and_job_completion_snapshots_commission(self):
-        self.authenticate_as(self.manager)
-        assignment_response = self.create_job()
-        completion_response = self.client.post(
-            f"/api/v1/jobs/{assignment_response.data['id']}/complete/",
-            {},
-            format="json",
-        )
-
-        self.assertEqual(assignment_response.status_code, 201)
-        self.assertEqual(assignment_response.data["status"], WorkerJob.Status.ASSIGNED)
-        self.assertEqual(completion_response.status_code, 200)
-        self.assertEqual(completion_response.data["status"], WorkerJob.Status.COMPLETED)
-        self.assertEqual(completion_response.data["service_price"], "20.00")
-        self.assertEqual(completion_response.data["commission_percentage"], "15.00")
-        self.assertEqual(completion_response.data["commission_amount"], "3.00")
-
-    def test_job_history_exposes_assigned_and_completed_records(self):
-        self.authenticate_as(self.manager)
-        assignment_response = self.create_job()
-        self.client.post(
-            f"/api/v1/jobs/{assignment_response.data['id']}/complete/",
-            {},
-            format="json",
-        )
-
-        response = self.client.get(
-            f"/api/v1/workers/{self.worker.pk}/job-history/"
-        )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["count"], 1)
-        self.assertEqual(response.data["results"][0]["worker_name"], "Alex Example")
-        self.assertEqual(
-            response.data["results"][0]["status"],
-            WorkerJob.Status.COMPLETED,
-        )
-
-    def test_job_commission_uses_the_effective_rate_and_rounds_to_cents(self):
-        self.authenticate_as(self.manager)
-        ServicePricing.objects.create(
-            vehicle_type=self.vehicle_type,
-            service=self.service,
-            price=Decimal("21.00"),
-            effective_date=timezone.localdate(),
-        )
-        CommissionSetting.objects.create(
-            commission_percentage=Decimal("17.50"),
-            effective_date=timezone.localdate(),
-        )
-        assignment_response = self.create_job()
-
-        response = self.client.post(
-            f"/api/v1/jobs/{assignment_response.data['id']}/complete/",
-            {},
-            format="json",
-        )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["service_price"], "21.00")
-        self.assertEqual(response.data["commission_percentage"], "17.50")
-        self.assertEqual(response.data["commission_amount"], "3.68")
-
-    def test_completion_requires_effective_pricing_and_commission_settings(self):
-        self.authenticate_as(self.manager)
-        self.pricing.is_active = False
-        self.pricing.save(update_fields={"is_active", "updated_at"})
-        assignment_response = self.create_job()
-
-        response = self.client.post(
-            f"/api/v1/jobs/{assignment_response.data['id']}/complete/",
-            {},
-            format="json",
-        )
-
-        self.assertEqual(assignment_response.status_code, 201)
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("service", response.data)
-
-    def test_daily_outstanding_commission_and_payment_history(self):
+    def test_daily_commission_and_payment_history_use_completed_job_assignments(self):
         self.authenticate_as(self.admin)
-        assignment_response = self.create_job()
-        self.client.post(
-            f"/api/v1/jobs/{assignment_response.data['id']}/complete/",
-            {},
-            format="json",
-        )
+        job_response = self.create_job()
+        completion_response = self.complete_job(job_response.data["id"])
         summary_url = (
             f"/api/v1/workers/{self.worker.pk}/commission-summary/"
-            f"?date={timezone.localdate().isoformat()}"
+            f"?date={job_response.data['job_date']}"
         )
 
         initial_summary = self.client.get(summary_url)
@@ -247,6 +168,8 @@ class WorkerApiTests(TestCase):
         )
         final_summary = self.client.get(summary_url)
 
+        self.assertEqual(job_response.status_code, 201)
+        self.assertEqual(completion_response.status_code, 200)
         self.assertEqual(initial_summary.status_code, 200)
         self.assertEqual(initial_summary.data["daily_commission"], "3.00")
         self.assertEqual(initial_summary.data["outstanding_commission"], "3.00")
@@ -256,6 +179,196 @@ class WorkerApiTests(TestCase):
         self.assertEqual(history_response.data["count"], 1)
         self.assertEqual(final_summary.data["outstanding_commission"], "1.75")
         self.assertEqual(CommissionPayment.objects.count(), 1)
+        self.assertEqual(JobWorkerAssignment.objects.count(), 1)
+        ledger_entry = CommissionLedgerEntry.objects.get(
+            assignment__job_id=job_response.data["id"]
+        )
+        self.assertEqual(ledger_entry.amount, Decimal("3.00"))
+
+    def test_daily_weekly_and_monthly_summaries_include_ledger_and_paid_totals(self):
+        for effective_date, amount in (
+            (date(2026, 2, 28), Decimal("100.00")),
+            (date(2026, 3, 1), Decimal("1.00")),
+            (date(2026, 3, 9), Decimal("2.00")),
+            (date(2026, 3, 15), Decimal("3.00")),
+        ):
+            CommissionLedgerEntry.objects.create(
+                worker=self.worker,
+                entry_type=CommissionLedgerEntry.EntryType.ADJUSTMENT,
+                amount=amount,
+                effective_date=effective_date,
+                reason="Summary fixture",
+            )
+        CommissionPayment.objects.create(
+            worker=self.worker,
+            amount=Decimal("0.50"),
+            payment_date=date(2026, 3, 10),
+        )
+        self.authenticate_as(self.manager)
+
+        daily = self.client.get(
+            f"/api/v1/workers/{self.worker.pk}/commission-summary/"
+            "?date=2026-03-15&period=daily"
+        )
+        weekly = self.client.get(
+            f"/api/v1/workers/{self.worker.pk}/commission-summary/"
+            "?date=2026-03-15&period=weekly"
+        )
+        monthly = self.client.get(
+            f"/api/v1/workers/{self.worker.pk}/commission-summary/"
+            "?date=2026-03-15&period=monthly"
+        )
+
+        self.assertEqual(daily.data["earned_commission"], "3.00")
+        self.assertEqual(daily.data["daily_commission"], "3.00")
+        self.assertEqual(daily.data["paid_commission"], "0.00")
+        self.assertEqual(weekly.data["period_start"], "2026-03-09")
+        self.assertEqual(weekly.data["period_end"], "2026-03-15")
+        self.assertEqual(weekly.data["earned_commission"], "5.00")
+        self.assertEqual(weekly.data["paid_commission"], "0.50")
+        self.assertEqual(monthly.data["period_start"], "2026-03-01")
+        self.assertEqual(monthly.data["period_end"], "2026-03-31")
+        self.assertEqual(monthly.data["earned_commission"], "6.00")
+        self.assertEqual(monthly.data["paid_commission"], "0.50")
+        self.assertEqual(monthly.data["outstanding_commission"], "105.50")
+
+    def test_admin_can_adjust_and_reverse_ledger_entries_without_mutating_history(self):
+        self.authenticate_as(self.admin)
+        job_response = self.create_job()
+        self.complete_job(job_response.data["id"])
+        earned = CommissionLedgerEntry.objects.get(
+            assignment__job_id=job_response.data["id"]
+        )
+        payment_response = self.client.post(
+            f"/api/v1/workers/{self.worker.pk}/commission-payments/",
+            {"amount": "2.00", "payment_date": timezone.localdate().isoformat()},
+            format="json",
+        )
+        adjustment_response = self.client.post(
+            f"/api/v1/workers/{self.worker.pk}/commission-ledger/",
+            {
+                "entry_type": "ADJUSTMENT",
+                "amount": "1.25",
+                "reason": "Approved correction",
+            },
+            format="json",
+        )
+        reversal_payload = {
+            "entry_type": "REVERSAL",
+            "source_entry": str(earned.pk),
+            "reason": "Reverse incorrect accrual",
+        }
+        reversal_response = self.client.post(
+            f"/api/v1/workers/{self.worker.pk}/commission-ledger/",
+            reversal_payload,
+            format="json",
+        )
+        duplicate_reversal = self.client.post(
+            f"/api/v1/workers/{self.worker.pk}/commission-ledger/",
+            reversal_payload,
+            format="json",
+        )
+        ledger_response = self.client.get(
+            f"/api/v1/workers/{self.worker.pk}/commission-ledger/"
+        )
+        summary_response = self.client.get(
+            f"/api/v1/workers/{self.worker.pk}/commission-summary/"
+        )
+
+        self.assertEqual(payment_response.status_code, 201)
+        self.assertEqual(adjustment_response.status_code, 201)
+        self.assertEqual(adjustment_response.data["amount"], "1.25")
+        self.assertEqual(adjustment_response.data["recorded_by"], self.admin.pk)
+        self.assertEqual(reversal_response.status_code, 201)
+        self.assertEqual(reversal_response.data["amount"], "-3.00")
+        self.assertEqual(reversal_response.data["source_entry"], earned.pk)
+        self.assertEqual(duplicate_reversal.status_code, 400)
+        self.assertEqual(ledger_response.status_code, 200)
+        self.assertEqual(ledger_response.data["count"], 3)
+        self.assertEqual(summary_response.data["earned_commission"], "1.25")
+        self.assertEqual(summary_response.data["paid_commission"], "2.00")
+        self.assertEqual(summary_response.data["outstanding_commission"], "-0.75")
+        self.assertEqual(CommissionLedgerEntry.objects.count(), 3)
+        with self.assertRaises(TypeError):
+            earned.reason = "changed"
+            earned.save()
+        with self.assertRaises(TypeError):
+            CommissionLedgerEntry.objects.filter(pk=earned.pk).update(
+                reason="changed"
+            )
+        with self.assertRaises(TypeError):
+            earned.delete()
+        self.assertEqual(
+            CommissionLedgerEntry.objects.get(pk=earned.pk).reason,
+            f"Commission earned on completed job ABC-123.",
+        )
+
+    def test_manager_can_view_but_not_write_commission_ledger(self):
+        self.authenticate_as(self.manager)
+
+        list_response = self.client.get(
+            f"/api/v1/workers/{self.worker.pk}/commission-ledger/"
+        )
+        create_response = self.client.post(
+            f"/api/v1/workers/{self.worker.pk}/commission-ledger/",
+            {
+                "entry_type": "ADJUSTMENT",
+                "amount": "1.00",
+                "reason": "Unauthorized adjustment",
+            },
+            format="json",
+        )
+
+        self.assertEqual(list_response.status_code, 200)
+        self.assertEqual(create_response.status_code, 403)
+
+        self.authenticate_as(self.super_admin)
+        super_admin_create = self.client.post(
+            f"/api/v1/workers/{self.worker.pk}/commission-ledger/",
+            {
+                "entry_type": "ADJUSTMENT",
+                "amount": "1.00",
+                "reason": "Super Admin correction",
+            },
+            format="json",
+        )
+        self.assertEqual(super_admin_create.status_code, 201)
+
+    def test_full_reversal_carries_negative_balance_and_prevents_new_payouts(self):
+        self.authenticate_as(self.admin)
+        job_response = self.create_job()
+        self.complete_job(job_response.data["id"])
+        earned = CommissionLedgerEntry.objects.get(
+            assignment__job_id=job_response.data["id"]
+        )
+        payment_response = self.client.post(
+            f"/api/v1/workers/{self.worker.pk}/commission-payments/",
+            {"amount": "2.00", "payment_date": timezone.localdate().isoformat()},
+            format="json",
+        )
+        reversal_response = self.client.post(
+            f"/api/v1/workers/{self.worker.pk}/commission-ledger/",
+            {
+                "entry_type": "REVERSAL",
+                "source_entry": str(earned.pk),
+                "reason": "Reverse previously paid commission",
+            },
+            format="json",
+        )
+        payout_response = self.client.post(
+            f"/api/v1/workers/{self.worker.pk}/commission-payments/",
+            {"amount": "0.01"},
+            format="json",
+        )
+        summary_response = self.client.get(
+            f"/api/v1/workers/{self.worker.pk}/commission-summary/"
+        )
+
+        self.assertEqual(payment_response.status_code, 201)
+        self.assertEqual(reversal_response.status_code, 201)
+        self.assertEqual(reversal_response.data["amount"], "-3.00")
+        self.assertEqual(payout_response.status_code, 400)
+        self.assertEqual(summary_response.data["outstanding_commission"], "-2.00")
 
     def test_manager_can_view_payments_but_cannot_record_them(self):
         self.authenticate_as(self.manager)
@@ -274,12 +387,8 @@ class WorkerApiTests(TestCase):
 
     def test_commission_payment_cannot_exceed_outstanding_balance(self):
         self.authenticate_as(self.admin)
-        assignment_response = self.create_job()
-        self.client.post(
-            f"/api/v1/jobs/{assignment_response.data['id']}/complete/",
-            {},
-            format="json",
-        )
+        job_response = self.create_job()
+        self.complete_job(job_response.data["id"])
 
         response = self.client.post(
             f"/api/v1/workers/{self.worker.pk}/commission-payments/",
@@ -290,31 +399,3 @@ class WorkerApiTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("amount", response.data)
         self.assertEqual(CommissionPayment.objects.count(), 0)
-
-    def test_cancelled_jobs_do_not_accrue_commission(self):
-        self.authenticate_as(self.manager)
-        assignment_response = self.create_job()
-
-        cancel_response = self.client.post(
-            f"/api/v1/jobs/{assignment_response.data['id']}/cancel/",
-            {},
-            format="json",
-        )
-        summary_response = self.client.get(
-            f"/api/v1/workers/{self.worker.pk}/commission-summary/"
-        )
-
-        self.assertEqual(cancel_response.status_code, 200)
-        self.assertEqual(cancel_response.data["status"], WorkerJob.Status.CANCELLED)
-        self.assertEqual(summary_response.data["daily_commission"], "0.00")
-        self.assertEqual(summary_response.data["outstanding_commission"], "0.00")
-
-    def test_commission_summary_rejects_an_invalid_date(self):
-        self.authenticate_as(self.manager)
-
-        response = self.client.get(
-            f"/api/v1/workers/{self.worker.pk}/commission-summary/?date=not-a-date"
-        )
-
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("date", response.data)

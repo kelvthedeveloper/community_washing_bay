@@ -82,7 +82,7 @@ export function WorkerPaymentDialog({
           error={form.formState.errors.amount?.message}
           id="commission-payment-amount"
           inputMode="decimal"
-          label="Payment amount"
+          label="Payment amount (GHS)"
           max={outstanding}
           min="0.01"
           placeholder="0.00"

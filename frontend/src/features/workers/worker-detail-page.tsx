@@ -12,7 +12,6 @@ import {
   MapPin,
   Pencil,
   Phone,
-  Plus,
   UserRound,
 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -26,22 +25,25 @@ import { useAuth } from "@/features/auth/auth-context";
 import { getRoleHomePath } from "@/features/auth/protected-route";
 
 import {
-  cancelWorkerJob,
-  completeWorkerJob,
   createWorkerCommissionPayment,
-  createWorkerJob,
+  createWorkerCommissionLedgerEntry,
   deactivateWorker,
   fetchWorker,
+  fetchWorkerCommissionLedger,
   fetchWorkerCommissionPayments,
   fetchWorkerCommissionSummary,
   fetchWorkerJobHistory,
   updateWorker,
 } from "./api";
 import { WorkerFormDialog } from "./worker-form-dialog";
-import { WorkerJobDialog } from "./worker-job-dialog";
+import { WorkerCommissionAdjustmentDialog } from "./worker-commission-adjustment-dialog";
 import { WorkerPaymentDialog } from "./worker-payment-dialog";
 import type {
+  CommissionLedgerEntry,
+  CommissionLedgerWritePayload,
   CommissionPayment,
+  CommissionSummary,
+  PaginatedResponse,
   WorkerJob,
   WorkerWritePayload,
 } from "./types";
@@ -61,13 +63,20 @@ export function WorkerDetailPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [reportDate, setReportDate] = useState(localDateInputValue());
+  const [reportPeriod, setReportPeriod] =
+    useState<CommissionSummary["period"]>("daily");
   const [jobPage, setJobPage] = useState(1);
   const [paymentPage, setPaymentPage] = useState(1);
-  const [activeTab, setActiveTab] = useState<"jobs" | "payments">("jobs");
+  const [ledgerPage, setLedgerPage] = useState(1);
+  const [activeTab, setActiveTab] = useState<"jobs" | "payments" | "ledger">(
+    "jobs",
+  );
   const [isEditing, setIsEditing] = useState(false);
   const [isDeactivating, setIsDeactivating] = useState(false);
   const [isRecordingPayment, setIsRecordingPayment] = useState(false);
-  const [isAssigningJob, setIsAssigningJob] = useState(false);
+  const [isAdjustingCommission, setIsAdjustingCommission] = useState(false);
+  const [entryToReverse, setEntryToReverse] =
+    useState<CommissionLedgerEntry | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const workerQuery = useQuery({
@@ -81,8 +90,19 @@ export function WorkerDetailPage() {
     enabled: Boolean(workerId),
   });
   const summaryQuery = useQuery({
-    queryKey: ["worker-commission-summary", workerId, reportDate],
-    queryFn: () => fetchWorkerCommissionSummary(workerId ?? "", reportDate),
+    queryKey: ["worker-commission-summary", workerId, reportDate, reportPeriod],
+    queryFn: () =>
+      fetchWorkerCommissionSummary(
+        workerId ?? "",
+        reportDate,
+        reportPeriod,
+      ),
+    enabled: Boolean(workerId),
+  });
+  const ledgerQuery = useQuery({
+    queryKey: ["worker-commission-ledger", workerId, ledgerPage],
+    queryFn: () =>
+      fetchWorkerCommissionLedger(workerId ?? "", ledgerPage, pageSize),
     enabled: Boolean(workerId),
   });
   const paymentsQuery = useQuery({
@@ -127,40 +147,27 @@ export function WorkerDetailPage() {
       setNotice("Commission payment recorded.");
     },
   });
-  const assignJobMutation = useMutation({
-    mutationFn: (values: { vehicle_type: string; service: string }) =>
-      createWorkerJob(workerId ?? "", values.vehicle_type, values.service),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
-        queryKey: ["worker-jobs", workerId],
-      });
-      setJobPage(1);
-      setIsAssigningJob(false);
-      setNotice("Job assigned to worker.");
-    },
-  });
-  const jobActionMutation = useMutation({
-    mutationFn: (values: { jobId: string; action: "complete" | "cancel" }) =>
-      values.action === "complete"
-        ? completeWorkerJob(values.jobId)
-        : cancelWorkerJob(values.jobId),
-    onSuccess: async (_data, variables) => {
+  const ledgerMutation = useMutation({
+    mutationFn: (payload: CommissionLedgerWritePayload) =>
+      createWorkerCommissionLedgerEntry(workerId ?? "", payload),
+    onSuccess: async (_entry, payload) => {
       await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: ["worker-jobs", workerId],
-        }),
         queryClient.invalidateQueries({
           queryKey: ["worker-commission-summary", workerId],
         }),
+        queryClient.invalidateQueries({
+          queryKey: ["worker-commission-ledger", workerId],
+        }),
       ]);
+      setIsAdjustingCommission(false);
+      setEntryToReverse(null);
       setNotice(
-        variables.action === "complete"
-          ? "Job completed and commission accrued."
-          : "Job cancelled.",
+        payload.entry_type === "REVERSAL"
+          ? "Commission reversal recorded."
+          : "Commission adjustment recorded.",
       );
     },
   });
-
   if (!workerId) {
     return <Navigate replace to="/workspace/workers" />;
   }
@@ -182,7 +189,14 @@ export function WorkerDetailPage() {
   const worker = workerQuery.data;
   const canRecordPayment =
     user.role === "ADMIN" || user.role === "SUPER_ADMIN";
+  const canManageLedger = canRecordPayment;
   const outstanding = summaryQuery.data?.outstanding_commission ?? "0.00";
+  const commissionPeriodLabel =
+    reportPeriod === "daily"
+      ? "Daily"
+      : reportPeriod === "weekly"
+        ? "Weekly"
+        : "Monthly";
 
   return (
     <div className="min-h-screen bg-[#f5f8f5]">
@@ -251,19 +265,6 @@ export function WorkerDetailPage() {
               </div>
             </div>
             <div className="flex shrink-0 flex-wrap gap-2">
-              {worker.is_active && (
-                <Button
-                  className="rounded-xl"
-                  onClick={() => {
-                    assignJobMutation.reset();
-                    setIsAssigningJob(true);
-                  }}
-                  type="button"
-                >
-                  <Plus aria-hidden="true" className="size-4" />
-                  Assign job
-                </Button>
-              )}
               <Button
                 className="rounded-xl"
                 onClick={() => {
@@ -332,25 +333,58 @@ export function WorkerDetailPage() {
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-sm font-medium text-muted-foreground">
-                  Daily commission
+                  {commissionPeriodLabel} commission earned
                 </p>
                 <p className="mt-2 text-3xl font-semibold tracking-tight text-[#17261d]">
                   {summaryQuery.isPending
                     ? "—"
-                    : formatMoney(summaryQuery.data?.daily_commission ?? "0.00")}
+                    : formatMoney(
+                        summaryQuery.data?.earned_commission ?? "0.00",
+                      )}
                 </p>
+                {summaryQuery.data && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {formatDate(summaryQuery.data.period_start)} –{" "}
+                    {formatDate(summaryQuery.data.period_end)} · Paid{" "}
+                    {formatMoney(summaryQuery.data.paid_commission)}
+                  </p>
+                )}
               </div>
-              <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-                <span className="sr-only">Commission date</span>
-                <CalendarDays aria-hidden="true" className="size-4" />
-                <Input
-                  aria-label="Commission date"
-                  className="h-10 w-40 rounded-xl"
-                  onChange={(event) => setReportDate(event.target.value)}
-                  type="date"
-                  value={reportDate}
-                />
-              </label>
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="sr-only" htmlFor="commission-period">
+                  Commission summary period
+                </label>
+                <select
+                  className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
+                  id="commission-period"
+                  onChange={(event) => {
+                    const selectedPeriod = event.target.value;
+                    if (
+                      selectedPeriod === "daily" ||
+                      selectedPeriod === "weekly" ||
+                      selectedPeriod === "monthly"
+                    ) {
+                      setReportPeriod(selectedPeriod);
+                    }
+                  }}
+                  value={reportPeriod}
+                >
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="monthly">Monthly</option>
+                </select>
+                <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                  <span className="sr-only">Commission date</span>
+                  <CalendarDays aria-hidden="true" className="size-4" />
+                  <Input
+                    aria-label="Commission date"
+                    className="h-10 w-40 rounded-xl"
+                    onChange={(event) => setReportDate(event.target.value)}
+                    type="date"
+                    value={reportDate}
+                  />
+                </label>
+              </div>
             </div>
             {summaryQuery.isError && (
               <InlineError
@@ -366,7 +400,8 @@ export function WorkerDetailPage() {
               {summaryQuery.isPending ? "—" : formatMoney(outstanding)}
             </p>
             <p className="mt-2 text-xs leading-5 text-muted-foreground">
-              Completed job commission less recorded payments.
+              Net earned commission less payments. Negative balances carry
+              forward against future earnings.
             </p>
             {canRecordPayment && Number(outstanding) > 0 && (
               <Button
@@ -416,6 +451,12 @@ export function WorkerDetailPage() {
               >
                 Payments
               </HistoryTab>
+              <HistoryTab
+                active={activeTab === "ledger"}
+                onClick={() => setActiveTab("ledger")}
+              >
+                Commission ledger
+              </HistoryTab>
             </div>
           </div>
           {activeTab === "jobs" ? (
@@ -426,28 +467,12 @@ export function WorkerDetailPage() {
                   ? getWorkerApiErrorMessage(jobHistoryQuery.error)
                   : null
               }
-              actionError={
-                jobActionMutation.isError
-                  ? getWorkerApiErrorMessage(jobActionMutation.error)
-                  : null
-              }
-              canManageJobs
+              workerId={worker.id}
               isLoading={jobHistoryQuery.isPending}
-              onCancel={(job) =>
-                jobActionMutation.mutate({ jobId: job.id, action: "cancel" })
-              }
-              onComplete={(job) =>
-                jobActionMutation.mutate({ jobId: job.id, action: "complete" })
-              }
               onNext={() => setJobPage((current) => current + 1)}
               onPrevious={() => setJobPage((current) => Math.max(current - 1, 1))}
-              pendingJobId={
-                jobActionMutation.isPending
-                  ? jobActionMutation.variables?.jobId
-                  : null
-              }
             />
-          ) : (
+          ) : activeTab === "payments" ? (
             <PaymentHistory
               data={paymentsQuery.data}
               error={
@@ -460,6 +485,29 @@ export function WorkerDetailPage() {
               onPrevious={() =>
                 setPaymentPage((current) => Math.max(current - 1, 1))
               }
+            />
+          ) : (
+            <CommissionLedgerHistory
+              canManage={canManageLedger}
+              data={ledgerQuery.data}
+              error={
+                ledgerQuery.isError
+                  ? getWorkerApiErrorMessage(ledgerQuery.error)
+                  : null
+              }
+              isLoading={ledgerQuery.isPending}
+              onAddAdjustment={() => {
+                ledgerMutation.reset();
+                setIsAdjustingCommission(true);
+              }}
+              onNext={() => setLedgerPage((current) => current + 1)}
+              onPrevious={() =>
+                setLedgerPage((current) => Math.max(current - 1, 1))
+              }
+              onReverse={(entry) => {
+                ledgerMutation.reset();
+                setEntryToReverse(entry);
+              }}
             />
           )}
         </section>
@@ -482,26 +530,6 @@ export function WorkerDetailPage() {
           onSubmit={(payload) => saveMutation.mutate(payload)}
           open
           worker={worker}
-        />
-      )}
-
-      {isAssigningJob && (
-        <WorkerJobDialog
-          error={
-            assignJobMutation.isError
-              ? getWorkerApiErrorMessage(assignJobMutation.error)
-              : null
-          }
-          isSaving={assignJobMutation.isPending}
-          onOpenChange={(open) => {
-            if (!open) {
-              setIsAssigningJob(false);
-              assignJobMutation.reset();
-            }
-          }}
-          onSubmit={(values) => assignJobMutation.mutate(values)}
-          open
-          workerName={worker.full_name}
         />
       )}
 
@@ -568,6 +596,75 @@ export function WorkerDetailPage() {
           outstanding={outstanding}
         />
       )}
+      {isAdjustingCommission && (
+        <WorkerCommissionAdjustmentDialog
+          error={
+            ledgerMutation.isError
+              ? getWorkerApiErrorMessage(ledgerMutation.error)
+              : null
+          }
+          isSaving={ledgerMutation.isPending}
+          onOpenChange={(open) => {
+            if (!open) {
+              setIsAdjustingCommission(false);
+              ledgerMutation.reset();
+            }
+          }}
+          onSubmit={(payload) => ledgerMutation.mutate(payload)}
+          open
+        />
+      )}
+      {entryToReverse && (
+        <Dialog
+          description={`A full reversal of ${formatMoney(entryToReverse.amount)} will be added to the immutable ledger. Any negative balance carries forward; payment history will not change.`}
+          onOpenChange={(open) => {
+            if (!open) {
+              setEntryToReverse(null);
+              ledgerMutation.reset();
+            }
+          }}
+          open
+          title="Reverse commission entry?"
+        >
+          <div className="space-y-5">
+            {ledgerMutation.isError && (
+              <InlineError
+                message={getWorkerApiErrorMessage(ledgerMutation.error)}
+              />
+            )}
+            <p className="text-sm text-muted-foreground">
+              {entryToReverse.reason}
+            </p>
+            <div className="flex justify-end gap-3 border-t border-[#edf1ed] pt-4">
+              <Button
+                className="rounded-xl"
+                disabled={ledgerMutation.isPending}
+                onClick={() => setEntryToReverse(null)}
+                type="button"
+                variant="outline"
+              >
+                Cancel
+              </Button>
+              <Button
+                className="rounded-xl"
+                disabled={ledgerMutation.isPending}
+                onClick={() =>
+                  ledgerMutation.mutate({
+                    entry_type: "REVERSAL",
+                    source_entry: entryToReverse.id,
+                    effective_date: localDateInputValue(),
+                    reason: `Reversal: ${entryToReverse.reason}`,
+                  })
+                }
+                type="button"
+                variant="destructive"
+              >
+                {ledgerMutation.isPending ? "Reversing…" : "Record reversal"}
+              </Button>
+            </div>
+          </div>
+        </Dialog>
+      )}
     </div>
   );
 }
@@ -623,25 +720,17 @@ function HistoryTab({
 function JobHistory({
   data,
   error,
-  actionError,
   isLoading,
-  canManageJobs,
-  pendingJobId,
+  workerId,
   onPrevious,
   onNext,
-  onComplete,
-  onCancel,
 }: {
   data: { count: number; next: string | null; previous: string | null; results: WorkerJob[] } | undefined;
   error: string | null;
-  actionError: string | null;
   isLoading: boolean;
-  canManageJobs: boolean;
-  pendingJobId: string | null | undefined;
+  workerId: string;
   onPrevious: () => void;
   onNext: () => void;
-  onComplete: (job: WorkerJob) => void;
-  onCancel: (job: WorkerJob) => void;
 }) {
   if (isLoading) {
     return <HistoryLoading />;
@@ -659,11 +748,6 @@ function JobHistory({
 
   return (
     <>
-      {actionError && (
-        <div className="px-4 pt-4 sm:px-6">
-          <InlineError message={actionError} />
-        </div>
-      )}
       <div className="divide-y divide-[#edf1ed]">
         {data.results.map((job) => (
           <article
@@ -672,44 +756,27 @@ function JobHistory({
           >
             <div className="min-w-0">
               <p className="font-medium text-foreground">
-                {job.service_name} · {job.vehicle_type_name}
+                {job.number_plate || "Legacy job"} · {job.vehicle_type_name}
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
+                {job.services.map((service) => service.service_name).join(", ")}
+                {" · "}
                 {job.completed_at
                   ? `Completed ${formatDateTime(job.completed_at)}`
-                  : `Assigned ${formatDateTime(job.assigned_at)}`}
+                  : `Registered ${formatDateTime(job.registered_at)}`}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
               <JobStatus status={job.status} />
-              <ValuePair label="Job price" value={formatMoney(job.service_price)} />
               <ValuePair
                 label="Commission"
-                value={formatMoney(job.commission_amount)}
+                value={formatMoney(
+                  job.assigned_workers.find(
+                    (assignment) => assignment.worker === workerId,
+                  )?.commission_amount ?? null,
+                )}
               />
-              {canManageJobs && job.status === "ASSIGNED" && (
-                <div className="flex gap-2">
-                  <Button
-                    className="rounded-lg"
-                    disabled={Boolean(pendingJobId)}
-                    onClick={() => onComplete(job)}
-                    size="sm"
-                    type="button"
-                  >
-                    {pendingJobId === job.id ? "Saving…" : "Complete"}
-                  </Button>
-                  <Button
-                    className="rounded-lg"
-                    disabled={Boolean(pendingJobId)}
-                    onClick={() => onCancel(job)}
-                    size="sm"
-                    type="button"
-                    variant="outline"
-                  >
-                    Cancel job
-                  </Button>
-                </div>
-              )}
+              <ValuePair label="Job price" value={formatMoney(job.total_price)} />
             </div>
           </article>
         ))}
@@ -795,13 +862,148 @@ function PaymentHistory({
   );
 }
 
+function CommissionLedgerHistory({
+  canManage,
+  data,
+  error,
+  isLoading,
+  onAddAdjustment,
+  onPrevious,
+  onNext,
+  onReverse,
+}: {
+  canManage: boolean;
+  data: PaginatedResponse<CommissionLedgerEntry> | undefined;
+  error: string | null;
+  isLoading: boolean;
+  onAddAdjustment: () => void;
+  onPrevious: () => void;
+  onNext: () => void;
+  onReverse: (entry: CommissionLedgerEntry) => void;
+}) {
+  if (isLoading) {
+    return <HistoryLoading />;
+  }
+  if (error) {
+    return <HistoryError message={error} />;
+  }
+  if (!data || data.results.length === 0) {
+    return (
+      <div>
+        {canManage && (
+          <div className="flex justify-end px-4 pt-4 sm:px-6">
+            <Button className="rounded-xl" onClick={onAddAdjustment} type="button">
+              Add adjustment
+            </Button>
+          </div>
+        )}
+        <HistoryEmpty>
+          No commission ledger entries are recorded for this worker yet.
+        </HistoryEmpty>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {canManage && (
+        <div className="flex justify-end px-4 pt-4 sm:px-6">
+          <Button
+            className="rounded-xl"
+            onClick={onAddAdjustment}
+            type="button"
+          >
+            Add adjustment
+          </Button>
+        </div>
+      )}
+      <div className="divide-y divide-[#edf1ed]">
+        {data.results.map((entry) => (
+          <article
+            className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-start sm:justify-between sm:px-6"
+            key={entry.id}
+          >
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="font-medium text-foreground">
+                  {entry.entry_type === "EARNED"
+                    ? "Commission earned"
+                    : entry.entry_type === "REVERSAL"
+                      ? "Reversal"
+                      : "Adjustment"}
+                </p>
+                {entry.is_reversed && (
+                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
+                    Reversed
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">
+                {entry.reason}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {formatDate(entry.effective_date)}
+                {entry.recorded_by_name &&
+                  ` · Recorded by ${entry.recorded_by_name}`}
+                {entry.commission_rate_snapshot !== null &&
+                  ` · ${entry.commission_rate_snapshot}% rate`}
+                {entry.allocation_policy_snapshot &&
+                  ` · ${
+                    entry.allocation_policy_snapshot === "EQUAL_SPLIT"
+                      ? "Equal split"
+                      : entry.allocation_policy_snapshot
+                  }`}
+                {entry.allocation_worker_count_snapshot &&
+                  ` among ${entry.allocation_worker_count_snapshot} washers`}
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-3">
+              <p
+                className={`font-semibold ${
+                  Number(entry.amount) < 0
+                    ? "text-destructive"
+                    : "text-[#176b3a]"
+                }`}
+              >
+                {formatMoney(entry.amount)}
+              </p>
+              {canManage &&
+                entry.entry_type !== "REVERSAL" &&
+                !entry.is_reversed && (
+                  <Button
+                    className="rounded-xl"
+                    onClick={() => onReverse(entry)}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    Reverse
+                  </Button>
+                )}
+            </div>
+          </article>
+        ))}
+      </div>
+      <Pagination
+        count={data.count}
+        next={data.next}
+        onNext={onNext}
+        onPrevious={onPrevious}
+        previous={data.previous}
+      />
+    </>
+  );
+}
+
 function JobStatus({ status }: { status: WorkerJob["status"] }) {
   const label =
     status === "COMPLETED"
       ? "Completed"
       : status === "CANCELLED"
         ? "Cancelled"
-        : "Assigned";
+        : status === "IN_PROGRESS"
+          ? "In progress"
+          : "Pending";
   return (
     <span
       className={`rounded-full px-2.5 py-1 text-xs font-medium ${

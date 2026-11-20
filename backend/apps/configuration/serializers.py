@@ -143,11 +143,17 @@ class CommissionSettingSerializer(serializers.ModelSerializer):
             "id",
             "commission_percentage",
             "effective_date",
+            "allocation_policy",
             "is_active",
             "created_at",
             "updated_at",
         )
-        read_only_fields = ("id", "created_at", "updated_at")
+        read_only_fields = (
+            "id",
+            "allocation_policy",
+            "created_at",
+            "updated_at",
+        )
 
     def validate(self, attrs):
         if self.instance is not None:

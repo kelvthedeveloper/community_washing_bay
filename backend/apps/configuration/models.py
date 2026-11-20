@@ -92,6 +92,9 @@ class ServicePricing(ActiveConfigurationModel):
 
 
 class CommissionSetting(ActiveConfigurationModel):
+    class AllocationPolicy(models.TextChoices):
+        EQUAL_SPLIT = "EQUAL_SPLIT", "Equal split"
+
     commission_percentage = models.DecimalField(
         max_digits=5,
         decimal_places=2,
@@ -101,6 +104,11 @@ class CommissionSetting(ActiveConfigurationModel):
         ],
     )
     effective_date = models.DateField()
+    allocation_policy = models.CharField(
+        max_length=20,
+        choices=AllocationPolicy.choices,
+        default=AllocationPolicy.EQUAL_SPLIT,
+    )
 
     class Meta:
         constraints = [

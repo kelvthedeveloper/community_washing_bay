@@ -166,7 +166,7 @@ function getColumnLabels(section: ConfigurationSection) {
     return ["Vehicle type", "Service", "Price", "Effective date"];
   }
   if (section.kind === "commission-settings") {
-    return ["Commission", "Effective date"];
+    return ["Commission", "Allocation policy", "Effective date"];
   }
   return ["Name", "Description", "Updated"];
 }
@@ -185,6 +185,10 @@ function getRecordCells(record: ConfigurationRecord): RecordCell[] {
       {
         label: "Commission",
         value: `${record.commission_percentage}%`,
+      },
+      {
+        label: "Allocation policy",
+        value: record.allocation_policy === "EQUAL_SPLIT" ? "Equal split" : record.allocation_policy,
       },
       { label: "Effective date", value: formatDate(record.effective_date) },
     ];

@@ -59,7 +59,9 @@ export function formatMoney(value: string | null) {
   if (value === null) {
     return "—";
   }
-  return new Intl.NumberFormat(undefined, {
+  return new Intl.NumberFormat("en-GH", {
+    style: "currency",
+    currency: "GHS",
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(Number(value));

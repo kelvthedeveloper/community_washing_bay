@@ -1,28 +1,32 @@
 from decimal import Decimal
 
 from django.db import transaction
-from django.db.models import Sum
-from django.shortcuts import get_object_or_404
+from django.db.models import Prefetch
 from django.utils import timezone
 from django.utils.dateparse import parse_date
-from rest_framework import filters, mixins, serializers, status, viewsets
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework import filters, serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
-from django_filters.rest_framework import DjangoFilterBackend
 
-from apps.workers.models import Worker, WorkerJob
+from apps.jobs.models import Job
+from apps.jobs.serializers import JobReadSerializer
+from apps.workers.models import CommissionLedgerEntry, Worker
 from apps.workers.permissions import (
-    CanManageWorkerJobs,
     CanManageWorkers,
     CanViewAndRecordCommissionPayments,
+    CanViewOrManageCommissionLedger,
 )
 from apps.workers.serializers import (
+    CommissionLedgerEntrySerializer,
+    CommissionLedgerMutationSerializer,
     CommissionPaymentSerializer,
-    WorkerJobSerializer,
     WorkerSerializer,
 )
-from apps.workers.services import complete_worker_job, get_worker_outstanding_commission
+from apps.workers.services import (
+    get_worker_commission_summary,
+)
 
 
 class WorkerPagination(PageNumberPagination):
@@ -54,37 +58,60 @@ class WorkerViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"], url_path="job-history")
     def job_history(self, _request, **_kwargs):
         worker = self.get_object()
-        queryset = worker.jobs.select_related("vehicle_type", "service").all()
+        queryset = (
+            worker.jobs.select_related(
+                "vehicle_type",
+                "vehicle",
+                "created_by",
+                "updated_by",
+                "discount_applied_by",
+            )
+            .prefetch_related(
+                "job_services__service",
+                "worker_assignments__worker",
+            )
+            .all()
+        )
         page = self.paginate_queryset(queryset)
-        serializer = WorkerJobSerializer(page, many=True)
+        serializer = JobReadSerializer(page, many=True)
         return self.get_paginated_response(serializer.data)
 
     @action(detail=True, methods=["get"], url_path="commission-summary")
     def commission_summary(self, request, **_kwargs):
         worker = self.get_object()
         date_value = request.query_params.get("date")
-        summary_date = (
-            parse_date(date_value) if date_value else timezone.localdate()
-        )
+        summary_date = parse_date(date_value) if date_value else timezone.localdate()
         if summary_date is None:
             raise serializers.ValidationError(
                 {"date": "Use a valid date in YYYY-MM-DD format."}
             )
 
-        daily_total = WorkerJob.objects.filter(
-            worker=worker,
-            status=WorkerJob.Status.COMPLETED,
-            completed_at__date=summary_date,
-        ).aggregate(total=Sum("commission_amount"))["total"]
-        return Response(
-            {
-                "date": summary_date.isoformat(),
-                "daily_commission": format_money(daily_total or Decimal("0.00")),
-                "outstanding_commission": format_money(
-                    get_worker_outstanding_commission(worker)
-                ),
-            }
+        period = request.query_params.get("period", "daily")
+        if period not in {"daily", "weekly", "monthly"}:
+            raise serializers.ValidationError(
+                {"period": "Choose daily, weekly, or monthly."}
+            )
+        summary = get_worker_commission_summary(
+            worker,
+            summary_date=summary_date,
+            period=period,
         )
+        response_data = {
+            "period": summary["period"],
+            "period_start": summary["period_start"].isoformat(),
+            "period_end": summary["period_end"].isoformat(),
+            "earned_commission": format_money(summary["earned_commission"]),
+            "paid_commission": format_money(summary["paid_commission"]),
+            "outstanding_commission": format_money(
+                summary["outstanding_commission"]
+            ),
+        }
+        if period == "daily":
+            response_data["date"] = summary["date"].isoformat()
+            response_data["daily_commission"] = format_money(
+                summary["daily_commission"]
+            )
+        return Response(response_data)
 
     @action(
         detail=True,
@@ -116,65 +143,75 @@ class WorkerViewSet(viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED,
         )
 
-
-class WorkerJobViewSet(
-    mixins.CreateModelMixin,
-    mixins.ListModelMixin,
-    mixins.RetrieveModelMixin,
-    viewsets.GenericViewSet,
-):
-    queryset = WorkerJob.objects.select_related(
-        "worker",
-        "vehicle_type",
-        "service",
+    @action(
+        detail=True,
+        methods=["get", "post"],
+        url_path="commission-ledger",
+        permission_classes=[CanViewOrManageCommissionLedger],
     )
-    serializer_class = WorkerJobSerializer
-    permission_classes = [CanManageWorkerJobs]
-    pagination_class = WorkerPagination
-    filter_backends = [
-        DjangoFilterBackend,
-        filters.SearchFilter,
-        filters.OrderingFilter,
-    ]
-    filterset_fields = ["worker", "vehicle_type", "service", "status"]
-    search_fields = ["worker__full_name", "vehicle_type__name", "service__name"]
-    ordering_fields = ["assigned_at", "completed_at", "status", "created_at"]
-    ordering = ["-assigned_at"]
-
-    def perform_create(self, serializer):
-        worker_id = serializer.validated_data["worker"].pk
-        with transaction.atomic():
-            worker = Worker.objects.select_for_update().get(pk=worker_id)
-            if not worker.is_active:
-                raise serializers.ValidationError(
-                    {"worker": "Inactive workers cannot be assigned to new jobs."}
+    def commission_ledger(self, request, **_kwargs):
+        worker = self.get_object()
+        if request.method in {"GET", "HEAD"}:
+            queryset = worker.commission_ledger_entries.select_related(
+                "job",
+                "assignment",
+                "source_entry",
+                "recorded_by",
+            ).prefetch_related(
+                Prefetch(
+                    "reversal_entries",
+                    queryset=CommissionLedgerEntry.objects.filter(
+                        entry_type=CommissionLedgerEntry.EntryType.REVERSAL
+                    ),
                 )
-            serializer.save(worker=worker)
-
-    @action(detail=True, methods=["post"])
-    def complete(self, _request, **_kwargs):
-        with transaction.atomic():
-            job = get_object_or_404(
-                WorkerJob.objects.select_for_update(),
-                pk=self.get_object().pk,
             )
-            complete_worker_job(job)
-        return Response(self.get_serializer(job).data)
+            page = self.paginate_queryset(queryset)
+            serializer = CommissionLedgerEntrySerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
 
-    @action(detail=True, methods=["post"])
-    def cancel(self, _request, **_kwargs):
         with transaction.atomic():
-            job = get_object_or_404(
-                WorkerJob.objects.select_for_update(),
-                pk=self.get_object().pk,
+            locked_worker = Worker.objects.select_for_update().get(pk=worker.pk)
+            serializer = CommissionLedgerMutationSerializer(
+                data=request.data,
+                context={"worker": locked_worker},
             )
-            if job.status != WorkerJob.Status.ASSIGNED:
-                raise serializers.ValidationError(
-                    {"status": "Only assigned jobs can be cancelled."}
+            serializer.is_valid(raise_exception=True)
+            values = serializer.validated_data
+            source_entry = values.get("source_entry")
+            if source_entry is not None:
+                source_entry = CommissionLedgerEntry.objects.select_for_update().get(
+                    pk=source_entry.pk,
+                    worker=locked_worker,
                 )
-            job.status = WorkerJob.Status.CANCELLED
-            job.save(update_fields={"status", "updated_at"})
-        return Response(self.get_serializer(job).data)
+                if (
+                    values["entry_type"] == CommissionLedgerEntry.EntryType.REVERSAL
+                    and source_entry.reversal_entries.exists()
+                ):
+                    raise serializers.ValidationError(
+                        {"source_entry": "This entry has already been reversed."}
+                    )
+
+            is_reversal = (
+                values["entry_type"] == CommissionLedgerEntry.EntryType.REVERSAL
+            )
+            amount = -source_entry.amount if is_reversal else values["amount"]
+            entry = CommissionLedgerEntry.objects.create(
+                worker=locked_worker,
+                job=source_entry.job if source_entry is not None else None,
+                assignment=(
+                    source_entry.assignment if source_entry is not None else None
+                ),
+                source_entry=source_entry,
+                entry_type=values["entry_type"],
+                amount=amount,
+                effective_date=values.get("effective_date", timezone.localdate()),
+                reason=values["reason"],
+                recorded_by=request.user,
+            )
+        return Response(
+            CommissionLedgerEntrySerializer(entry).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 def format_money(value):

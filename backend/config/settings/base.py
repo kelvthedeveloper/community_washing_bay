@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import environ
+from corsheaders.defaults import default_headers
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -30,7 +31,11 @@ INSTALLED_APPS = [
     "rest_framework_simplejwt.token_blacklist",
     "apps.core.apps.CoreConfig",
     "apps.configuration.apps.ConfigurationConfig",
+    "apps.inventory.apps.InventoryConfig",
+    "apps.expenses.apps.ExpensesConfig",
     "apps.workers.apps.WorkersConfig",
+    "apps.jobs.apps.JobsConfig",
+    "apps.reporting.apps.ReportingConfig",
     "apps.users.apps.UsersConfig",
     "apps.authentication.apps.AuthenticationConfig",
 ]
@@ -68,17 +73,11 @@ AUTHENTICATION_BACKENDS = [
     "apps.users.backends.UsernameOrEmailBackend",
 ]
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": env("POSTGRES_DB"),
-        "USER": env("POSTGRES_USER"),
-        "PASSWORD": env("POSTGRES_PASSWORD"),
-        "HOST": env("POSTGRES_HOST"),
-        "PORT": env("POSTGRES_PORT", default="5432"),
-        "CONN_MAX_AGE": env.int("POSTGRES_CONN_MAX_AGE", default=60),
-    }
-}
+DATABASES = {"default": env.db_url("DATABASE_URL")}
+DATABASES["default"].setdefault(
+    "CONN_MAX_AGE",
+    env.int("DATABASE_CONN_MAX_AGE", default=60),
+)
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -102,9 +101,11 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+MEDIA_ROOT = BASE_DIR / "private_media"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 CORS_ALLOWED_ORIGINS = env("CORS_ALLOWED_ORIGINS")
+CORS_ALLOW_HEADERS = (*default_headers, "idempotency-key")
 CORS_ALLOW_CREDENTIALS = False
 CSRF_TRUSTED_ORIGINS = env("CSRF_TRUSTED_ORIGINS")
 
@@ -144,4 +145,7 @@ SPECTACULAR_SETTINGS = {
     "DESCRIPTION": "Versioned API for Community Washing Bay.",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    "ENUM_NAME_OVERRIDES": {
+        "PaymentMethodEnum": "apps.expenses.models.Expense.PaymentMethod",
+    },
 }

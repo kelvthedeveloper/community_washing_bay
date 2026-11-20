@@ -1,0 +1,19 @@
+[Unit]
+Description=Back up Community Washing Bay database and private media
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=/etc/community-washing-bay/app.env
+Environment=BACKUP_DIR=/var/backups/community-washing-bay
+Environment=MEDIA_ROOT=/srv/community-washing-bay/backend/private_media
+ExecStart=/bin/bash /srv/community-washing-bay/deploy/backup.sh
+UMask=0077
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/backups/community-washing-bay
+

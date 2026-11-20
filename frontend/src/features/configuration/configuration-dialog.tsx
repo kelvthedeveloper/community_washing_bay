@@ -92,6 +92,7 @@ interface ConfigurationDialogProps {
   services: NamedConfigurationRecord[];
   optionsLoading: boolean;
   optionsError: string | null;
+  onRetryOptions: () => void;
 }
 
 export function ConfigurationDialog({
@@ -106,6 +107,7 @@ export function ConfigurationDialog({
   services,
   optionsLoading,
   optionsError,
+  onRetryOptions,
 }: ConfigurationDialogProps) {
   const mode = record ? "Edit" : "Add";
 
@@ -146,6 +148,7 @@ export function ConfigurationDialog({
             onSubmit={onSubmit}
             optionsError={optionsError}
             optionsLoading={optionsLoading}
+            onRetryOptions={onRetryOptions}
             services={services}
             vehicleTypes={vehicleTypes}
           />
@@ -243,6 +246,7 @@ function ServicePricingCreateForm({
   services,
   optionsLoading,
   optionsError,
+  onRetryOptions,
 }: {
   onSubmit: (payload: ConfigurationWritePayload) => void;
   onCancel: () => void;
@@ -252,6 +256,7 @@ function ServicePricingCreateForm({
   services: NamedConfigurationRecord[];
   optionsLoading: boolean;
   optionsError: string | null;
+  onRetryOptions: () => void;
 }) {
   const form = useForm<ServicePricingFormValues>({
     resolver: zodResolver(servicePricingSchema),
@@ -271,72 +276,105 @@ function ServicePricingCreateForm({
       onSubmit={form.handleSubmit((values) => onSubmit(values))}
     >
       <FormError message={error} />
-      {optionsError && <FormError message={optionsError} />}
+      {optionsError && (
+        <div
+          className="flex flex-col gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 sm:flex-row sm:items-center sm:justify-between"
+          role="alert"
+        >
+          <span>{optionsError}</span>
+          <Button
+            className="shrink-0 rounded-lg"
+            onClick={onRetryOptions}
+            type="button"
+            variant="outline"
+          >
+            Retry loading options
+          </Button>
+        </div>
+      )}
       {optionsLoading && (
         <p className="text-sm text-muted-foreground" role="status">
           Loading vehicle types and services…
         </p>
       )}
-      {!optionsLoading && !optionsError && (
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div className="space-y-2">
-            <label
-              className="text-sm font-medium text-foreground"
-              htmlFor="pricing-vehicle-type"
-            >
-              Vehicle type
-            </label>
-            <select
-              aria-invalid={Boolean(form.formState.errors.vehicle_type)}
-              className={selectClassName}
-              id="pricing-vehicle-type"
-              {...form.register("vehicle_type")}
-            >
-              <option value="">Select a vehicle type</option>
-              {vehicleTypes
-                .filter((vehicleType) => vehicleType.is_active)
-                .map((vehicleType) => (
-                  <option key={vehicleType.id} value={vehicleType.id}>
-                    {vehicleType.name}
-                  </option>
-                ))}
-            </select>
-            <FieldError
-              message={form.formState.errors.vehicle_type?.message}
-            />
-          </div>
-          <div className="space-y-2">
-            <label
-              className="text-sm font-medium text-foreground"
-              htmlFor="pricing-service"
-            >
-              Service
-            </label>
-            <select
-              aria-invalid={Boolean(form.formState.errors.service)}
-              className={selectClassName}
-              id="pricing-service"
-              {...form.register("service")}
-            >
-              <option value="">Select a service</option>
-              {services
-                .filter((service) => service.is_active)
-                .map((service) => (
-                  <option key={service.id} value={service.id}>
-                    {service.name}
-                  </option>
-                ))}
-            </select>
-            <FieldError message={form.formState.errors.service?.message} />
-          </div>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="space-y-2">
+          <label
+            className="text-sm font-medium text-foreground"
+            htmlFor="pricing-vehicle-type"
+          >
+            Vehicle type
+          </label>
+          <select
+            aria-invalid={Boolean(form.formState.errors.vehicle_type)}
+            className={selectClassName}
+            disabled={optionsLoading || Boolean(optionsError)}
+            id="pricing-vehicle-type"
+            {...form.register("vehicle_type")}
+          >
+            <option value="">
+              {optionsError
+                ? "Could not load vehicle types"
+                : optionsLoading
+                  ? "Loading vehicle types…"
+                  : "Select a vehicle type"}
+            </option>
+            {vehicleTypes
+              .filter((vehicleType) => vehicleType.is_active)
+              .map((vehicleType) => (
+                <option key={vehicleType.id} value={vehicleType.id}>
+                  {vehicleType.name}
+                </option>
+              ))}
+          </select>
+          <FieldError message={form.formState.errors.vehicle_type?.message} />
         </div>
+        <div className="space-y-2">
+          <label
+            className="text-sm font-medium text-foreground"
+            htmlFor="pricing-service"
+          >
+            Service
+          </label>
+          <select
+            aria-invalid={Boolean(form.formState.errors.service)}
+            className={selectClassName}
+            disabled={optionsLoading || Boolean(optionsError)}
+            id="pricing-service"
+            {...form.register("service")}
+          >
+            <option value="">
+              {optionsError
+                ? "Could not load services"
+                : optionsLoading
+                  ? "Loading services…"
+                  : "Select a service"}
+            </option>
+            {services
+              .filter((service) => service.is_active)
+              .map((service) => (
+                <option key={service.id} value={service.id}>
+                  {service.name}
+                </option>
+              ))}
+          </select>
+          <FieldError message={form.formState.errors.service?.message} />
+        </div>
+      </div>
+      {!optionsLoading && !optionsError && (
+        (vehicleTypes.every((vehicleType) => !vehicleType.is_active) ||
+          services.every((service) => !service.is_active)) && (
+          <p className="text-sm text-muted-foreground" role="status">
+            Add an active vehicle type and service before creating a price.
+          </p>
+        )
       )}
       <div className="grid gap-4 sm:grid-cols-2">
         <TextField
           error={form.formState.errors.price?.message}
           id="pricing-price"
           inputMode="decimal"
-          label="Price"
+          label="Price (GHS)"
           maxLength={13}
           placeholder="0.00"
           {...form.register("price")}
@@ -351,7 +389,13 @@ function ServicePricingCreateForm({
       </div>
       <ActiveField register={form.register("is_active")} />
       <FormActions
-        isSaving={isSaving || optionsLoading}
+        isSaving={
+          isSaving ||
+          optionsLoading ||
+          Boolean(optionsError) ||
+          vehicleTypes.every((vehicleType) => !vehicleType.is_active) ||
+          services.every((service) => !service.is_active)
+        }
         onCancel={onCancel}
         submitLabel="Create pricing"
       />
@@ -481,6 +525,12 @@ function CommissionStatusForm({
       <RecordSummary
         values={[
           ["Commission percentage", `${record.commission_percentage}%`],
+          [
+            "Worker allocation policy",
+            record.allocation_policy === "EQUAL_SPLIT"
+              ? "Equal split"
+              : record.allocation_policy,
+          ],
           ["Effective date", record.effective_date],
         ]}
       />

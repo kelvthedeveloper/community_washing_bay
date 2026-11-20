@@ -332,13 +332,27 @@ function ConfigurationSectionPage({
 
   const vehicleTypes = vehicleTypesQuery.data?.results ?? [];
   const services = servicesQuery.data?.results ?? [];
+  const optionsQueryError =
+    vehicleTypesQuery.error ?? servicesQuery.error;
   const optionsError =
-    section.id === "service-pricing"
-      ? getApiErrorMessage(vehicleTypesQuery.error ?? servicesQuery.error)
+    section.id === "service-pricing" &&
+    (vehicleTypesQuery.isError || servicesQuery.isError)
+      ? getApiErrorMessage(optionsQueryError)
       : null;
   const isOptionsLoading =
     section.id === "service-pricing" &&
     (vehicleTypesQuery.isPending || servicesQuery.isPending);
+
+  async function retryOptions() {
+    const retries = [];
+    if (vehicleTypesQuery.isError) {
+      retries.push(vehicleTypesQuery.refetch());
+    }
+    if (servicesQuery.isError) {
+      retries.push(servicesQuery.refetch());
+    }
+    await Promise.all(retries);
+  }
 
   const hasFilters =
     Boolean(search.trim()) ||
@@ -656,6 +670,7 @@ function ConfigurationSectionPage({
           services={services}
           optionsError={optionsError}
           optionsLoading={isOptionsLoading}
+          onRetryOptions={() => void retryOptions()}
           vehicleTypes={vehicleTypes}
         />
       )}
@@ -782,6 +797,9 @@ function getApiErrorMessage(error: unknown) {
     if (messages.length > 0) {
       return [...new Set(messages)].join(" ");
     }
+  }
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
   }
   return "Something went wrong. Please try again.";
 }

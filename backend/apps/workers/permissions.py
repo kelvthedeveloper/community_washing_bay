@@ -22,3 +22,15 @@ class CanViewAndRecordCommissionPayments(HasBusinessRole):
             request.user.has_unrestricted_access
             or request.user.role == User.Role.ADMIN
         )
+
+
+class CanViewOrManageCommissionLedger(HasBusinessRole):
+    allowed_roles = frozenset({User.Role.ADMIN, User.Role.MANAGER})
+
+    def has_permission(self, request, view):
+        if request.method in SAFE_METHODS:
+            return super().has_permission(request, view)
+        return super().has_permission(request, view) and (
+            request.user.has_unrestricted_access
+            or request.user.role == User.Role.ADMIN
+        )

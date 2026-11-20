@@ -34,6 +34,36 @@ const WorkerDetailPage = lazy(() =>
     default: module.WorkerDetailPage,
   })),
 );
+const JobsPage = lazy(() =>
+  import("@/features/jobs/jobs-page").then((module) => ({
+    default: module.JobsPage,
+  })),
+);
+const ReceiptPage = lazy(() =>
+  import("@/features/jobs/receipt-page").then((module) => ({
+    default: module.ReceiptPage,
+  })),
+);
+const InventoryPage = lazy(() =>
+  import("@/features/inventory/inventory-page").then((module) => ({
+    default: module.InventoryPage,
+  })),
+);
+const ExpensesPage = lazy(() =>
+  import("@/features/expenses/expenses-page").then((module) => ({
+    default: module.ExpensesPage,
+  })),
+);
+const ReportingPage = lazy(() =>
+  import("@/features/reporting/reporting-page").then((module) => ({
+    default: module.ReportingPage,
+  })),
+);
+const AccountsPage = lazy(() =>
+  import("@/features/auth/accounts-page").then((module) => ({
+    default: module.AccountsPage,
+  })),
+);
 
 const roleRoutes: Array<{ path: string; role: BusinessRole }> = [
   { path: "/workspace/super-admin", role: "SUPER_ADMIN" },
@@ -93,6 +123,62 @@ export default function App() {
                 </ProtectedRoute>
               }
               path="/workspace/workers/:workerId"
+            />
+            <Route
+              element={
+                <ProtectedRoute>
+                  <JobsPage />
+                </ProtectedRoute>
+              }
+              path="/workspace/pos"
+            />
+            <Route
+              element={
+                <ProtectedRoute>
+                  <JobsPage />
+                </ProtectedRoute>
+              }
+              path="/workspace/jobs"
+            />
+            <Route
+              element={
+                <ProtectedRoute>
+                  <InventoryPage />
+                </ProtectedRoute>
+              }
+              path="/workspace/inventory"
+            />
+            <Route
+              element={
+                <ProtectedRoute>
+                  <ExpensesPage />
+                </ProtectedRoute>
+              }
+              path="/workspace/expenses"
+            />
+            <Route
+              element={
+                <ProtectedRoute allowedRoles={["ADMIN", "SUPER_ADMIN"]}>
+                  <ReportingPage />
+                </ProtectedRoute>
+              }
+              path="/workspace/reports"
+            />
+            <Route
+              element={
+                <ProtectedRoute allowedRoles={["ADMIN", "SUPER_ADMIN"]}>
+                  <AccountsPage />
+                </ProtectedRoute>
+              }
+              path="/workspace/users"
+            />
+            <Route
+              element={
+                <ProtectedRoute>
+                  <ReceiptPage />
+                </ProtectedRoute>
+              }
+              path="/workspace/jobs/:jobId/receipt"
             />
             <Route element={<HomeRoute />} path="/" />
             {roleRoutes.map(({ path, role }) => (

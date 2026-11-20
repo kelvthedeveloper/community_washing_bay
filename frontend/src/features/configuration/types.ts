@@ -30,6 +30,7 @@ export interface ServicePricingRecord extends TimestampedRecord {
 export interface CommissionSettingRecord extends TimestampedRecord {
   commission_percentage: string;
   effective_date: string;
+  allocation_policy: "EQUAL_SPLIT";
 }
 
 export type ConfigurationRecord =

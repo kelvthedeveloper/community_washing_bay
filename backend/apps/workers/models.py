@@ -1,16 +1,11 @@
 from decimal import Decimal
 
 from django.conf import settings
-from django.core.exceptions import ValidationError
-from django.core.validators import MaxValueValidator, MinValueValidator
+from django.core.validators import MinValueValidator
 from django.db import models
 from django.utils import timezone
 
-from apps.configuration.models import Service, VehicleType
 from apps.core.models import UUIDTimeStampedModel
-
-
-WORKER_JOB_STATUSES = ("ASSIGNED", "COMPLETED", "CANCELLED")
 
 
 class Worker(UUIDTimeStampedModel):
@@ -31,117 +26,6 @@ class Worker(UUIDTimeStampedModel):
         if self.is_active:
             self.is_active = False
             self.save(update_fields={"is_active", "updated_at"})
-
-
-class WorkerJob(UUIDTimeStampedModel):
-    class Status(models.TextChoices):
-        ASSIGNED = "ASSIGNED", "Assigned"
-        COMPLETED = "COMPLETED", "Completed"
-        CANCELLED = "CANCELLED", "Cancelled"
-
-    worker = models.ForeignKey(
-        Worker,
-        on_delete=models.PROTECT,
-        related_name="jobs",
-    )
-    vehicle_type = models.ForeignKey(
-        VehicleType,
-        on_delete=models.PROTECT,
-        related_name="worker_jobs",
-    )
-    service = models.ForeignKey(
-        Service,
-        on_delete=models.PROTECT,
-        related_name="worker_jobs",
-    )
-    status = models.CharField(
-        max_length=12,
-        choices=Status.choices,
-        default=Status.ASSIGNED,
-    )
-    assigned_at = models.DateTimeField(default=timezone.now)
-    completed_at = models.DateTimeField(null=True, blank=True)
-    service_price = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        null=True,
-        blank=True,
-        validators=[MinValueValidator(Decimal("0.00"))],
-    )
-    commission_percentage = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
-        null=True,
-        blank=True,
-        validators=[
-            MinValueValidator(Decimal("0.00")),
-            MaxValueValidator(Decimal("100.00")),
-        ],
-    )
-    commission_amount = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        null=True,
-        blank=True,
-        validators=[MinValueValidator(Decimal("0.00"))],
-    )
-
-    class Meta:
-        ordering = ("-assigned_at", "-created_at")
-        constraints = [
-            models.CheckConstraint(
-                condition=models.Q(status__in=WORKER_JOB_STATUSES),
-                name="workers_job_valid_status",
-            ),
-            models.CheckConstraint(
-                condition=(
-                    models.Q(status="COMPLETED")
-                    & models.Q(completed_at__isnull=False)
-                    & models.Q(service_price__isnull=False)
-                    & models.Q(commission_percentage__isnull=False)
-                    & models.Q(commission_amount__isnull=False)
-                )
-                | (
-                    models.Q(status__in=("ASSIGNED", "CANCELLED"))
-                    & models.Q(completed_at__isnull=True)
-                    & models.Q(service_price__isnull=True)
-                    & models.Q(commission_percentage__isnull=True)
-                    & models.Q(commission_amount__isnull=True)
-                ),
-                name="workers_job_completion_snapshot_valid",
-            ),
-            models.CheckConstraint(
-                condition=models.Q(commission_percentage__isnull=True)
-                | models.Q(
-                    commission_percentage__gte=0,
-                    commission_percentage__lte=100,
-                ),
-                name="workers_job_commission_percentage_valid",
-            ),
-        ]
-
-    def __str__(self):
-        return f"{self.service} for {self.worker}"
-
-    def save(self, *args, **kwargs):
-        old_worker_id = None
-        if not self._state.adding:
-            old_worker_id = (
-                type(self).objects.filter(pk=self.pk)
-                .values_list("worker_id", flat=True)
-                .first()
-            )
-        if self.worker_id and (
-            self._state.adding or old_worker_id != self.worker_id
-        ):
-            if not Worker.objects.filter(
-                pk=self.worker_id,
-                is_active=True,
-            ).exists():
-                raise ValidationError(
-                    {"worker": "Inactive workers cannot be assigned to new jobs."}
-                )
-        super().save(*args, **kwargs)
 
 
 class CommissionPayment(UUIDTimeStampedModel):
@@ -176,3 +60,152 @@ class CommissionPayment(UUIDTimeStampedModel):
 
     def __str__(self):
         return f"{self.worker} commission payment ({self.amount})"
+
+
+class CommissionLedgerQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise TypeError("Commission ledger entries are immutable.")
+
+    def delete(self):
+        raise TypeError("Commission ledger entries are immutable.")
+
+
+class CommissionLedgerEntry(UUIDTimeStampedModel):
+    class EntryType(models.TextChoices):
+        EARNED = "EARNED", "Earned"
+        ADJUSTMENT = "ADJUSTMENT", "Adjustment"
+        REVERSAL = "REVERSAL", "Reversal"
+
+    worker = models.ForeignKey(
+        Worker,
+        on_delete=models.PROTECT,
+        related_name="commission_ledger_entries",
+    )
+    job = models.ForeignKey(
+        "jobs.Job",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="commission_ledger_entries",
+    )
+    assignment = models.ForeignKey(
+        "jobs.JobWorkerAssignment",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="commission_ledger_entries",
+    )
+    source_entry = models.ForeignKey(
+        "self",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="reversal_entries",
+    )
+    entry_type = models.CharField(max_length=12, choices=EntryType.choices)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    effective_date = models.DateField(default=timezone.localdate, db_index=True)
+    reason = models.TextField()
+    commission_base_snapshot = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    commission_rate_snapshot = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    allocation_policy_snapshot = models.CharField(
+        max_length=20,
+        choices=(("EQUAL_SPLIT", "Equal split"),),
+        null=True,
+        blank=True,
+    )
+    allocation_worker_count_snapshot = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+    )
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="worker_commission_ledger_entries",
+    )
+
+    objects = CommissionLedgerQuerySet.as_manager()
+
+    class Meta:
+        ordering = ("-effective_date", "-created_at")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("assignment",),
+                condition=models.Q(
+                    entry_type="EARNED",
+                    assignment__isnull=False,
+                ),
+                name="workers_commission_earned_assignment_uniq",
+            ),
+            models.UniqueConstraint(
+                fields=("source_entry",),
+                condition=models.Q(
+                    entry_type="REVERSAL",
+                    source_entry__isnull=False,
+                ),
+                name="workers_commission_reversal_source_uniq",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(
+                        entry_type="EARNED",
+                        assignment__isnull=False,
+                        job__isnull=False,
+                        allocation_policy_snapshot="EQUAL_SPLIT",
+                        allocation_worker_count_snapshot__gt=0,
+                    )
+                    | ~models.Q(entry_type="EARNED")
+                ),
+                name="workers_commission_earned_snapshot_complete",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(entry_type="EARNED", amount__gte=0)
+                    | ~models.Q(entry_type="EARNED")
+                ),
+                name="workers_commission_earned_nonnegative",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    ~models.Q(entry_type__in=("ADJUSTMENT", "REVERSAL"))
+                    | ~models.Q(amount=0)
+                ),
+                name="workers_commission_corrections_nonzero",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(
+                    entry_type__in=("EARNED", "ADJUSTMENT", "REVERSAL")
+                ),
+                name="workers_commission_entry_type_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(entry_type="REVERSAL", source_entry__isnull=False)
+                    | ~models.Q(entry_type="REVERSAL")
+                ),
+                name="workers_commission_reversal_has_source",
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise TypeError("Commission ledger entries are immutable.")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise TypeError("Commission ledger entries are immutable.")
+
+    def __str__(self):
+        return f"{self.worker} commission {self.entry_type.lower()} ({self.amount})"
